@@ -15,9 +15,9 @@
 import json
 import os
 
-# Chrome 书签文件路径
+# Chrome bookmark file path
 bookmark_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Bookmarks")
-# 保存到 JSON 文件路径
+# Path to save to JSON file
 output_path = os.path.expanduser("./bookmarks.json")
 
 def get_bookmarks(bookmark_path):
@@ -27,7 +27,7 @@ def get_bookmarks(bookmark_path):
     urls = []
 
     def extract_bookmarks(bookmark_node):
-        """递归提取所有书签的 URL"""
+        """Recursively extract URLs of all bookmarks"""
         if "children" in bookmark_node:
             for child in bookmark_node["children"]:
                 extract_bookmarks(child)
@@ -43,20 +43,20 @@ def get_bookmarks(bookmark_path):
             }
             urls.append(bookmark_info)
 
-    # 遍历 JSON 结构
+    # Traverse the JSON structure
     for item in bookmarks_data["roots"].values():
         extract_bookmarks(item)
 
     return urls
 
-# 解析书签
+# Parse bookmarks
 bookmarks = get_bookmarks(bookmark_path)
 
-# 保存到 JSON 文件
+# Save to JSON file
 output_path = os.path.expanduser(output_path)
 with open(output_path, "w", encoding="utf-8") as output_file:
-    # 去掉 url 为空的数据，以及扩展程序的数据
-    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["name"] != "扩展程序"] 
+    # Remove data with empty URLs, and extension data
+    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["name"] != "Extensions"] 
     json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
 
-print(f"共提取 {len(bookmarks)} 个书签，已保存到 {output_path}")
+print(f"Extracted {len(bookmarks)} bookmarks in total, saved to {output_path}")

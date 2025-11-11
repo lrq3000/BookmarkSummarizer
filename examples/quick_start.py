@@ -2,51 +2,51 @@
 # -*- coding: utf-8 -*-
 
 """
-BookmarkSummarizer快速开始示例
+BookmarkSummarizer Quick Start Example
 """
 
 import os
 import sys
 import subprocess
 
-# 添加项目根目录到Python路径
+# Add project root directory to Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# 导入程序
+# Import the program
 from index import get_bookmarks
 
 def main():
-    """快速开始示例"""
-    # 步骤1: 提取书签
-    print("步骤1: 提取Chrome书签")
+    """Quick start example"""
+    # Step 1: Extract bookmarks
+    print("Step 1: Extract Chrome bookmarks")
     bookmark_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Bookmarks")
-    
+
     if not os.path.exists(bookmark_path):
-        print(f"错误: 找不到Chrome书签文件: {bookmark_path}")
-        print("请确认Chrome已安装，或者修改bookmark_path路径")
+        print(f"Error: Chrome bookmarks file not found: {bookmark_path}")
+        print("Please confirm Chrome is installed, or modify the bookmark_path")
         sys.exit(1)
-    
-    # 使用index.py提取书签
+
+    # Use index.py to extract bookmarks
     bookmarks = get_bookmarks(bookmark_path)
-    print(f"成功提取 {len(bookmarks)} 个书签")
-    
-    # 步骤2: 爬取内容并生成摘要
-    print("\n步骤2: 爬取内容并生成摘要")
-    print("运行以下命令开始处理:")
-    print("python crawl.py --limit 5")  # 仅处理5个书签作为示例
-    
-    # 提示用户确认
-    confirmation = input("\n是否立即开始处理5个书签? (y/n): ")
+    print(f"Successfully extracted {len(bookmarks)} bookmarks")
+
+    # Step 2: Crawl content and generate summaries
+    print("\nStep 2: Crawl content and generate summaries")
+    print("Run the following command to start processing:")
+    print("python crawl.py --limit 5")  # Only process 5 bookmarks as an example
+
+    # Prompt user for confirmation
+    confirmation = input("\nDo you want to start processing 5 bookmarks immediately? (y/n): ")
     if confirmation.lower() == 'y':
         try:
             subprocess.run(["python", "../crawl.py", "--limit", "5"], check=True)
-            print("\n处理完成! 请查看生成的JSON文件")
+            print("\nProcessing completed! Please check the generated JSON files")
         except subprocess.CalledProcessError as e:
-            print(f"处理过程中发生错误: {e}")
+            print(f"An error occurred during processing: {e}")
     else:
-        print("您可以稍后手动运行上述命令")
-    
-    print("\n快速开始完成!")
+        print("You can manually run the above command later")
+
+    print("\nQuick start completed!")
 
 if __name__ == "__main__":
-    main() 
+    main()

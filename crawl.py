@@ -53,16 +53,16 @@ failed_urls_path = os.path.expanduser("./failed_urls.json")
 # Load environment variables
 load_dotenv()
 
-# 配置项
+# Configuration settings
 class ModelConfig:
-    # 支持的模型类型
+    # Supported model types
     OPENAI = "openai"
     DEEPSEEK = "deepseek"
     QWEN = "qwen"
-    OLLAMA = "ollama"  # 添加Ollama模型类型
+    OLLAMA = "ollama"  # Added Ollama model type
 
     def __init__(self):
-        # 默认配置
+        # Default configuration
         self.model_type = os.getenv("MODEL_TYPE", self.OPENAI)
         self.api_key = os.getenv("API_KEY", "")
         self.api_base = os.getenv("API_BASE", "https://api.openai.com/v1")
@@ -71,65 +71,67 @@ class ModelConfig:
         self.max_input_content_length = int(os.getenv("MAX_INPUT_CONTENT_LENGTH", "6000"))
         self.temperature = float(os.getenv("TEMPERATURE", "0.3"))
         
-        # DeepSeek特定配置
+        # DeepSeek specific configuration
         self.top_p = float(os.getenv("TOP_P", "0.7"))
         self.top_k = int(os.getenv("TOP_K", "50"))
         self.frequency_penalty = float(os.getenv("FREQUENCY_PENALTY", "0.5"))
         self.system_prompt = os.getenv("SYSTEM_PROMPT", "")
         self.use_tools = os.getenv("USE_TOOLS", "").lower() in ("true", "1", "yes")
         
-        # Qwen特定配置
+        # Qwen specific configuration
         self.qwen_api_version = os.getenv("QWEN_API_VERSION", "2023-12-01-preview")
-        # Ollama特定配置
-        self.ollama_format = os.getenv("OLLAMA_FORMAT", "text")  # 可选: json, text
+        # Ollama specific configuration
+        self.ollama_format = os.getenv("OLLAMA_FORMAT", "text")  # Options: json, text
 
-# 使用大模型生成摘要
+# Generate summary using a Large Language Model (LLM)
 def generate_summary(title, content, url, config=None):
     """
-    使用大模型生成网页内容摘要
+    Generates a summary of the webpage content using an LLM.
     
-    参数:
-        title (str): 网页标题
-        content (str): 网页内容
-        url (str): 网页URL
-        config (ModelConfig, optional): 模型配置，默认使用环境变量
+    Parameters:
+        title (str): Webpage title
+        content (str): Webpage content
+        url (str): Webpage URL
+        config (ModelConfig, optional): Model configuration, defaults to environment variables.
         
-    返回:
-        str: 生成的摘要
+    Returns:
+        str: The generated summary.
     """
     if config is None:
         config = ModelConfig()
     
     try:
-        # 限制内容长度，避免超出token限制
+        # Limit content length to avoid exceeding token limits
         max_content_length = config.max_input_content_length
         if len(content) > max_content_length:
             content = content[:max_content_length] + "..."
         
-        # 构建更详细的提示词
-        prompt = f"""请为以下网页内容生成一个全面、信息丰富的摘要（约500字）。
+        # Construct a more detailed prompt
+        prompt = f"""Generate only a comprehensive, informative summary (approx. 500 words) for the following webpage content. Begin directly with the summary text. Do not include any introductory phrases such as “Here is a summary” or similar.
 
-网页标题: {title}
-网页地址: {url}
+Webpage Title: {title}
+Webpage URL: {url}
 
-网页内容:
+Webpage Content:
 {content}
 
-摘要要求:
-1. 以关键信息密集的方式组织内容，确保包含重要的专业术语、实体名称和关键概念
-2. 使用清晰的段落结构，按主题划分信息，每段聚焦一个核心要点
-3. 在摘要开头提供一句概括性总结，简明扼要地说明文档的主要内容和目的
-4. 使用事实性、具体的表述，避免模糊或一般性描述
-5. 保留原文中的重要数字、日期、名称、专业术语和独特标识符
-6. 对于技术内容，包含具体的技术名称、版本号、参数和方法名称
-7. 对于新闻事件，明确包含时间、地点、人物和事件关键细节
-8. 对于教程或指南，列出具体步骤名称和关键操作点
-9. 对于产品或服务，包含具体的产品名称、特性和规格
-10. 确保信息密度高，便于向量检索匹配
+Summary Requirements:
+1. Organize the content in a key-information-dense manner, ensuring the inclusion of important technical terms, entity names, and key concepts.
+2. Use a clear paragraph structure, dividing information by topic, with each paragraph focusing on a core point.
+3. Provide a concise introductory summary sentence at the beginning, briefly stating the main content and purpose of the document.
+4. Use factual, specific statements, avoiding vague or general descriptions.
+5. Retain important numbers, dates, names, technical terms, and unique identifiers from the original text.
+6. For technical content, include specific technology names, version numbers, parameters, and method names.
+7. For news events, clearly include the time, location, people, and key details of the event.
+8. For tutorials or guides, list specific step names and critical operational points.
+9. For products or services, include specific product names, features, and specifications.
+10. Ensure high information density for easy vector retrieval matching.
+11. Output only the summary text. Do not add any explanations, comments, or meta statements before or after the summary
+12. Be concise, straight-to-the-point, and avoid unnecessary filler words, write in a note taking kind of way, without conjunctive words, only keep information dense words.
 
-请生成一个信息密集、结构清晰的摘要，优化为便于向量检索的文本形式格式，尽量减少语气词、废话、重复、无用、比如：好的、嗯等词语。
+Please generate an information-dense, clearly structured summary, optimized for a text format suitable for vector retrieval, minimizing filler words, unnecessary repetition, and words like: 'okay', 'um', etc.
 """
-        # 根据不同的模型类型调用不同的API
+        # Call the corresponding API based on the model type
         if config.model_type == ModelConfig.OLLAMA:
             return call_ollama_api(prompt, config)
         elif config.model_type == ModelConfig.QWEN:
@@ -140,7 +142,7 @@ def generate_summary(title, content, url, config=None):
             raise ValueError(f"Unsupported model type: {config.model_type}")
     
     except Exception as e:
-        print(f"生成摘要失败: {url} - {e}")
+        print(f"Summary generation failed: {url} - {e}")
         return f"Summary generation failed: {str(e)}"
 
 # Ollama API Call
@@ -253,32 +255,32 @@ def call_ollama_api(prompt, config=None):
             print(f"Response content: {response.text}")
         raise
       
-# 通义千问Qwen的API调用
+# API call for Qwen (Tongyi Qianwen)
 def call_qwen_api(prompt, config=None):
     """
-    专门为通义千问Qwen2.5设计的API调用
+    API call specifically designed for Qwen (Tongyi Qianwen) models.
     
-    参数:
-        prompt (str): 提示词
-        config (ModelConfig, optional): 模型配置
+    Parameters:
+        prompt (str): The prompt text
+        config (ModelConfig, optional): Model configuration
         
-    返回:
-        str: 模型生成的响应文本
+    Returns:
+        str: The response text generated by the model
     """
     if config is None:
         config = ModelConfig()
     
-    # API端点
+    # API endpoint
     url = f"{config.api_base}/chat/completions"
     
-    # 构建消息
+    # Construct messages
     messages = [{"role": "user", "content": prompt}]
     
-    # 如果有系统提示，添加到消息中
+    # If there is a system prompt, add it to the messages
     if hasattr(config, 'system_prompt') and config.system_prompt:
         messages.insert(0, {"role": "system", "content": config.system_prompt})
     
-    # 构建请求负载 - Qwen2.5 通常兼容 OpenAI 格式
+    # Construct request payload - Qwen 2.5 is usually compatible with OpenAI format
     payload = {
         "model": config.model_name,
         "messages": messages,
@@ -288,17 +290,17 @@ def call_qwen_api(prompt, config=None):
         "stream": False
     }
     
-    # 构建请求头
+    # Construct headers
     headers = {
         "Content-Type": "application/json"
     }
     
-    # 如果有API密钥，添加到请求头
+    # If there is an API key, add it to the headers
     if config.api_key and config.api_key.strip():
         headers["Authorization"] = f"Bearer {config.api_key}"
     
     try:
-        # 发送请求
+        # Send request
         response = requests.post(
             url,
             json=payload,
@@ -306,71 +308,71 @@ def call_qwen_api(prompt, config=None):
             timeout=60
         )
         
-        # 检查响应状态
+        # Check response status
         response.raise_for_status()
         
-        # 解析响应
+        # Parse response
         result = response.json()
         
-        # 提取生成的文本 - Qwen API 通常遵循 OpenAI 格式
+        # Extract generated text - Qwen API usually follows OpenAI format
         if "choices" in result and len(result["choices"]) > 0:
-            if "message" in result["choices"][0]:
-                return result["choices"][0]["message"]["content"]
-            elif "text" in result["choices"][0]:
-                return result["choices"][0]["text"]
+            if "message" in result["choices"]:
+                return result["choices"]["message"]["content"]
+            elif "text" in result["choices"]:
+                return result["choices"]["text"]
             else:
-                # 如果找不到预期的字段，返回整个choice对象
-                return str(result["choices"][0])
+                # If the expected field is not found, return the entire choice object
+                return str(result["choices"])
         else:
-            # 如果响应中没有choices字段，返回整个响应
+            # If the response does not contain the choices field, return the entire response
             return str(result)
             
     except requests.exceptions.RequestException as e:
-        print(f"Qwen API请求错误: {e}")
+        print(f"Qwen API Request Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
-        raise Exception(f"API调用失败: {str(e)}")
+            print(f"Response content: {response.text}")
+        raise Exception(f"API call failed: {str(e)}")
     except ValueError as e:
-        print(f"Qwen API响应解析错误: {e}")
+        print(f"Qwen API Response Parsing Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
-        raise Exception(f"响应解析失败: {str(e)}")
+            print(f"Response content: {response.text}")
+        raise Exception(f"Response parsing failed: {str(e)}")
     except Exception as e:
-        print(f"Qwen API调用未知错误: {e}")
+        print(f"Qwen API Unknown Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
+            print(f"Response content: {response.text}")
         raise
 
 def call_deepseek_api(prompt, config=None):
     """
-    专门为DeepSeek R1设计的API调用
+    API call specifically designed for DeepSeek R1.
     
-    参数:
-        prompt (str): 提示词
-        config (ModelConfig, optional): 模型配置
+    Parameters:
+        prompt (str): The prompt text
+        config (ModelConfig, optional): Model configuration
         
-    返回:
-        str: 模型生成的响应文本
+    Returns:
+        str: The response text generated by the model
     """
     if config is None:
         config = ModelConfig()
     
-    # API端点
+    # API endpoint
     url = f"{config.api_base}/chat/completions"
-    print(f"调用DeepSeek API: {url}")
-    print(f"使用模型: {config.model_name}")
-    print(f"API密钥长度: {len(config.api_key) if config.api_key else 0}")
+    print(f"Calling DeepSeek API: {url}")
+    print(f"Using model: {config.model_name}")
+    print(f"API Key Length: {len(config.api_key) if config.api_key else 0}")
     
-    # 构建消息
+    # Construct messages
     messages = [{"role": "user", "content": prompt}]
     
-    # 如果有系统提示，添加到消息中
+    # If there is a system prompt, add it to the messages
     if hasattr(config, 'system_prompt') and config.system_prompt:
         messages.insert(0, {"role": "system", "content": config.system_prompt})
     
-    # 构建请求负载
+    # Construct request payload
     payload = {
-        "model": config.model_name,  # 例如 "deepseek-ai/DeepSeek-R1"
+        "model": config.model_name,  # e.g., "deepseek-ai/DeepSeek-R1"
         "messages": messages,
         "stream": False,
         "max_tokens": config.max_tokens,
@@ -382,72 +384,72 @@ def call_deepseek_api(prompt, config=None):
         "response_format": {"type": "text"}
     }
     
-    # 打印请求体以供调试
-    print(f"请求配置: temperature={config.temperature}, max_tokens={config.max_tokens}")
+    # Print request configuration for debugging
+    print(f"Request config: temperature={config.temperature}, max_tokens={config.max_tokens}")
     
-    # 构建请求头
+    # Construct headers
     headers = {
         "Content-Type": "application/json"
     }
     
-    # 如果有API密钥，添加到请求头
+    # If there is an API key, add it to the headers
     if config.api_key and config.api_key.strip():
         headers["Authorization"] = f"Bearer {config.api_key}"
-        print("已添加Authorization头")
+        print("Authorization header added")
     else:
-        print("未设置API密钥，请求不包含Authorization头")
+        print("API key not set, request does not include Authorization header")
     
     try:
-        # 发送请求
-        print("正在发送请求...")
+        # Send request
+        print("Sending request...")
         response = requests.post(
             url,
             json=payload,
             headers=headers,
-            timeout=60  # 增加超时时间，因为大模型可能需要更长时间处理
+            timeout=60  # Increase timeout, as LLMs may require longer processing time
         )
         
-        # 检查响应状态
-        print(f"响应状态码: {response.status_code}")
+        # Check response status
+        print(f"Response status code: {response.status_code}")
         response.raise_for_status()
         
-        # 解析响应
+        # Parse response
         result = response.json()
-        print(f"成功获取响应: {result.keys() if isinstance(result, dict) else '非字典响应'}")
+        print(f"Successfully received response: {result.keys() if isinstance(result, dict) else 'Non-dictionary response'}")
         
-        # 提取生成的文本
+        # Extract generated text
         if "choices" in result and len(result["choices"]) > 0:
-            if "message" in result["choices"][0]:
-                content = result["choices"][0]["message"]["content"]
-                print(f"成功提取内容，长度: {len(content)}")
+            if "message" in result["choices"]:
+                content = result["choices"]["message"]["content"]
+                print(f"Successfully extracted content, length: {len(content)}")
                 return content
-            elif "text" in result["choices"][0]:
-                text = result["choices"][0]["text"]
-                print(f"成功提取文本，长度: {len(text)}")
+            elif "text" in result["choices"]:
+                text = result["choices"]["text"]
+                print(f"Successfully extracted text, length: {len(text)}")
                 return text
             else:
-                # 如果找不到预期的字段，返回整个choice对象
-                print(f"未找到content或text字段，返回整个choice对象: {result['choices'][0]}")
-                return str(result["choices"][0])
+                # If the expected field is not found, return the entire choice object
+                print(f"Content or text field not found, returning entire choice object: {result['choices']}")
+                return str(result["choices"])
         else:
-            # 如果响应中没有choices字段，返回整个响应
-            print(f"响应中没有choices字段，返回整个响应: {result}")
+            # If the response does not contain the choices field, return the entire response
+            print(f"Response does not contain choices field, returning entire response: {result}")
             return str(result)
             
     except requests.exceptions.RequestException as e:
-        print(f"DeepSeek API请求错误: {e}")
+        print(f"DeepSeek API Request Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
-        raise Exception(f"API调用失败: {str(e)}")
+            print(f"Response content: {response.text}")
+        raise Exception(f"API call failed: {str(e)}")
     except ValueError as e:
-        print(f"DeepSeek API响应解析错误: {e}")
+        print(f"DeepSeek API Response Parsing Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
-        raise Exception(f"响应解析失败: {str(e)}")
+            print(f"Response content: {response.text}")
+        raise Exception(f"Response parsing failed: {str(e)}")
     except Exception as e:
-        print(f"DeepSeek API调用未知错误: {e}")
+        print(f"DeepSeek API Unknown Error: {e}")
         if 'response' in locals() and hasattr(response, 'text'):
-            print(f"响应内容: {response.text}")
+            print(f"Response content: {response.text}")
         raise
 
 def test_api_connection(config=None):
@@ -500,97 +502,97 @@ def test_api_connection(config=None):
         print(f"Detailed error information: {traceback_str}")
         return False
 
-# 在主函数中添加摘要生成步骤
+# Add summary generation step in the main function
 def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None):
-    """为书签内容生成摘要"""
+    """Generates summaries for bookmark content."""
     if model_config is None:
         model_config = ModelConfig()
     
     total_count = len(bookmarks_with_content)
     print('Generating summaries for bookmarks...')
-    print(f"正在使用 {model_config.model_type} 模型 {model_config.model_name} 生成内容摘要，共 {total_count} 个...")
+    print(f"Using {model_config.model_type} model {model_config.model_name} to generate content summaries for {total_count} items...")
     
-    # 首先读取现有的文件内容
+    # First, read the existing file content
     try:
         with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
             existing_data = json.load(f)
-            # 创建URL到书签的映射
+            # Create a map from URL to bookmark
             existing_map = {item.get('url'): item for item in existing_data}
     except (FileNotFoundError, json.JSONDecodeError):
         existing_map = {}
         existing_data = []
 
-    # 使用临时文件来保存进度
+    # Use a temporary file to save progress
     temp_file_path = f"{bookmarks_with_content_path}.temp"
     
-    # 复制现有数据到临时文件
+    # Copy existing data to the temporary file
     try:
         with open(temp_file_path, 'w', encoding='utf-8') as f:
             json.dump(existing_data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        print(f"创建临时文件失败: {str(e)}")
-        return existing_data  # 返回现有数据
+        print(f"Failed to create temporary file: {str(e)}")
+        return existing_data  # Return existing data
     
     success_count = 0
-    for idx, bookmark in enumerate(tqdm(bookmarks_with_content, desc="摘要生成进度")):
+    for idx, bookmark in enumerate(tqdm(bookmarks_with_content, desc="Summary Generation Progress")):
         url = bookmark["url"]
         title = bookmark["title"]
         print(f"Generating summary [{idx+1}/{total_count}]: {title} - {url}")
         
-        # 检查是否已经处理过
+        # Check if already processed
         if url in existing_map and "summary" in existing_map[url]:
-            print(f"[{idx+1}/{total_count}] 跳过已存在摘要: {title} - {url}")
+            print(f"[{idx+1}/{total_count}] Skipping existing summary: {title} - {url}")
             success_count += 1
             continue
         
         progress_info = f"[{idx+1}/{total_count}]"
-        print(f"{progress_info} 正在为以下链接生成摘要: {url}")
+        print(f"{progress_info} Generating summary for the following link: {url}")
         
-        # 生成摘要
+        # Generate summary
         summary = generate_summary(title, bookmark["content"], url, model_config)
         print(f"{progress_info} title: {title}")
-        print(f"{progress_info} summary length: {len(summary)} 字符")
+        print(f"{progress_info} summary length: {len(summary)} characters")
         print(f"{progress_info} summary truncated: {summary[:200]}...")
         
-        # 添加摘要到书签数据
+        # Add summary to bookmark data
         bookmark["summary"] = summary
         bookmark["summary_model"] = model_config.model_name
         bookmark["summary_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
         
         if "Summary generation failed" not in summary:
             success_count += 1
-            print(f"{progress_info} 摘要生成成功")
+            print(f"{progress_info} Summary generated successfully")
             
-            # 更新数据结构
+            # Update data structure
             if url in existing_map:
-                # 更新现有记录
+                # Update existing record
                 for i, item in enumerate(existing_data):
                     if item.get('url') == url:
                         existing_data[i] = bookmark
                         break
             else:
-                # 添加新记录
+                # Add new record
                 existing_data.append(bookmark)
             
-            # 保存到临时文件
+            # Save to temporary file
             try:
                 with open(temp_file_path, 'w', encoding='utf-8') as f:
                     json.dump(existing_data, f, ensure_ascii=False, indent=4)
-                # 成功写入临时文件后，替换原文件
+                # After successfully writing to the temporary file, replace the original file
                 os.replace(temp_file_path, bookmarks_with_content_path)
-                print(f"{progress_info} 已保存当前进度")
+                print(f"{progress_info} Current progress saved")
             except Exception as e:
-                print(f"{progress_info} 保存进度时出错: {str(e)}")
+                print(f"{progress_info} Error saving progress: {str(e)}")
         else:
             print(f"{progress_info} Summary generation failed: {summary}")
         
-        # 每次请求后短暂暂停，避免API限制
+        # Brief pause after each request to avoid API limits
         time.sleep(0.5)
     
-    print(f"摘要生成完成! 成功: {success_count}/{total_count}")
+    print(f"Summary generation complete! Success: {success_count}/{total_count}")
     return existing_data
 
-# 读取书签 JSON 文件
+# Read the bookmark JSON file
 def get_bookmarks(bookmark_path):
     with open(bookmark_path, "r", encoding="utf-8") as file:
         bookmarks_data = json.load(file)
@@ -598,7 +600,7 @@ def get_bookmarks(bookmark_path):
     urls = []
 
     def extract_bookmarks(bookmark_node):
-        """递归提取所有书签的 URL"""
+        """Recursively extracts the URL of all bookmarks"""
         if "children" in bookmark_node:
             for child in bookmark_node["children"]:
                 extract_bookmarks(child)
@@ -614,48 +616,48 @@ def get_bookmarks(bookmark_path):
             }
             urls.append(bookmark_info)
 
-    # 遍历 JSON 结构
+    # Traverse the JSON structure
     for item in bookmarks_data["roots"].values():
         extract_bookmarks(item)
 
     return urls
 
-# 创建一个带有重试机制的会话
+# Create a session with a retry mechanism
 def create_session():
     session = requests.Session()
     retry_strategy = Retry(
-        total=3,  # 最多重试3次
-        backoff_factor=0.5,  # 重试间隔时间
-        status_forcelist=[429, 500, 502, 503, 504],  # 这些状态码会触发重试
-        allowed_methods=["GET"]  # 只对GET请求进行重试
+        total=3,  # Maximum 3 retries
+        backoff_factor=0.5,  # Retry interval backoff factor
+        status_forcelist=[429, 500, 502, 503, 504],  # Status codes that trigger a retry
+        allowed_methods=["GET"]  # Only retry for GET requests
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
 
-# 清理文本内容
+# Clean up text content
 def clean_text(text):
-    # 移除多余的空白行和空格
+    # Remove excessive blank lines and spaces
     lines = [line.strip() for line in text.split('\n')]
-    # 过滤掉空行
+    # Filter out empty lines
     lines = [line for line in lines if line]
-    # 合并行
+    # Join lines
     return '\n'.join(lines)
 
-# 初始化Selenium WebDriver
+# Initialize Selenium WebDriver
 def init_webdriver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # 无头模式
+    chrome_options.add_argument("--headless")  # Headless mode
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
-    # 添加更多的用户代理信息
+    # Add more user agent information
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
     
-    # 禁用图片加载以提高速度
+    # Disable image loading to improve speed
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     
@@ -664,9 +666,9 @@ def init_webdriver():
     
     return driver
 
-# 使用Selenium爬取动态内容
-def fetch_with_selenium(url, current_idx=None, total_count=None, title="无标题"):
-    """使用Selenium获取网页内容"""
+# Fetch dynamic content using Selenium
+def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title"):
+    """Fetches webpage content using Selenium"""
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
     
     options = Options()
@@ -674,42 +676,43 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="无标�
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    # 添加更真实的用户代理
+    # Add a more realistic user agent
     options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36')
     
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         
-        print(f"{progress_info} 开始使用Selenium爬取：{title} - {url}")
+        print(f"{progress_info} Starting Selenium crawl for: {title} - {url}")
         driver.get(url)
         
-        # 等待页面加载
+        # Wait for page to load
         time.sleep(5)
         
-        # 知乎特殊处理：如果有登录弹窗，尝试关闭
+        # Special handling for Zhihu: attempt to close login pop-up if present
         if "zhihu.com" in url:
             try:
-                # 尝试点击关闭按钮 (多种可能的选择器)
+                # Attempt to click the close button (multiple possible selectors)
                 selectors = ['.Modal-closeButton', '.Button.Modal-closeButton', 
                             'button.Button.Modal-closeButton', '.close']
                 for selector in selectors:
                     try:
+                        # Use a more robust locator strategy if possible, but stick to the original logic for now
                         close_button = driver.find_element("css selector", selector)
                         close_button.click()
-                        print(f"{progress_info} 成功关闭知乎登录弹窗 - 使用选择器: {selector}")
+                        print(f"{progress_info} Successfully closed Zhihu login pop-up - using selector: {selector}")
                         time.sleep(1)
                         break
                     except:
                         continue
             except Exception as e:
-                print(f"{progress_info} 处理知乎登录弹窗失败: {title} - {str(e)}")
+                print(f"{progress_info} Failed to handle Zhihu login pop-up: {title} - {str(e)}")
         
-        # 获取页面内容
+        # Get page content
         content = driver.page_source
         soup = BeautifulSoup(content, 'html.parser')
         
-        # 知乎特殊处理：提取文章内容
+        # Special handling for Zhihu: extract article content
         if "zhihu.com" in url:
             article = soup.select_one('.Post-RichText') or soup.select_one('.RichText') or soup.select_one('.AuthorInfo') or soup.select_one('article')
             if article:
@@ -717,178 +720,178 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="无标�
             else:
                 text_content = soup.get_text(strip=True)
         else:
-            # 一般网页处理
+            # General webpage handling
             text_content = soup.get_text(strip=True)
         
-        # 修复编码问题
+        # Fix encoding issues
         text_content = fix_encoding(text_content)
         
-        # 确保文本不为空
-        if not text_content or len(text_content.strip()) < 5:  # 至少5个字符才算有效内容
-            print(f"{progress_info} Selenium爬取内容为空或太少: {title} - {url}")
+        # Ensure text is not empty
+        if not text_content or len(text_content.strip()) < 5:  # At least 5 characters for valid content
+            print(f"{progress_info} Selenium crawl content is empty or too short: {title} - {url}")
             return None
             
-        print(f"{progress_info} Selenium成功爬取: {title} - {url}，内容长度: {len(text_content)} 字符")
+        print(f"{progress_info} Selenium successfully crawled: {title} - {url}, content length: {len(text_content)} characters")
         return text_content
         
     except Exception as e:
-        print(f"{progress_info} Selenium爬取失败: {title} - {url} - {str(e)}")
+        print(f"{progress_info} Selenium crawl failed: {title} - {url} - {str(e)}")
         return None
     finally:
         if 'driver' in locals():
             driver.quit()
 
-# 检测并修复编码问题 优化后的编码修复函数
+# Detect and fix encoding issues - Optimized encoding fix function
 def fix_encoding(text):
     """
-    检测并修复文本编码问题，优化性能版本
+    Detects and fixes text encoding issues, optimized performance version.
     """
-    if not text or len(text) < 20:  # 对短文本直接返回
+    if not text or len(text) < 20:  # Return directly for short text
         return text
     
-    # 快速检查是否需要修复 - 只检查文本的一小部分样本
+    # Quick check if fixing is needed - only check a small sample of the text
     sample_size = min(1000, len(text))
     sample_text = text[:sample_size]
     
-    # 如果样本中非ASCII字符比例低，直接返回原文本
+    # If the proportion of non-ASCII characters in the sample is low, return the original text directly
     non_ascii_count = sum(1 for c in sample_text if ord(c) > 127)
-    if non_ascii_count < sample_size * 0.1:  # 如果非ASCII字符少于10%
+    if non_ascii_count < sample_size * 0.1:  # If non-ASCII characters are less than 10%
         return text
     
-    # 检查是否有明显的编码问题特征（连续的特殊字符）
-    # 使用更高效的方法替代正则表达式
+    # Check for obvious encoding issue characteristics (consecutive special characters)
+    # Use a more efficient method instead of regex
     special_char_sequence = 0
     for c in sample_text:
         if ord(c) > 127:
             special_char_sequence += 1
-            if special_char_sequence >= 10:  # 发现连续10个非ASCII字符
+            if special_char_sequence >= 10:  # Found 10 consecutive non-ASCII characters
                 break
         else:
             special_char_sequence = 0
     
-    # 如果没有明显的编码问题特征，直接返回
+    # If there are no obvious encoding issue characteristics, return directly
     if special_char_sequence < 10:
         return text
     
-    # 只对可能有问题的文本进行编码检测
+    # Only perform encoding detection on potentially problematic text
     try:
-        # 只对样本进行编码检测，而不是整个文本
+        # Only detect encoding on the sample, not the entire text
         sample_bytes = sample_text.encode('latin-1', errors='ignore')
         detected = chardet.detect(sample_bytes)
         
-        # 如果检测到的编码与当前编码不同且置信度高
+        # If the detected encoding is different from the current one and confidence is high
         if detected['confidence'] > 0.8 and detected['encoding'] not in ('ascii', 'utf-8'):
-            # 对整个文本进行重新编码
+            # Re-encode the entire text
             text_bytes = text.encode('latin-1', errors='ignore')
             return text_bytes.decode(detected['encoding'], errors='replace')
     except Exception as e:
-        print(f"编码修复失败: {e}")
+        print(f"Encoding fix failed: {e}")
     
     return text
 
-# 爬取网页内容
+# Crawl webpage content
 def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
-    """爬取网页内容"""
+    """Crawls webpage content"""
     url = bookmark["url"]
-    title = bookmark.get("name", "无标题")  # 从书签中获取标题
+    title = bookmark.get("name", "No Title")  # Get title from bookmark
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
     
-    # 初始化变量，防止未赋值
+    # Initialize variables to prevent unassigned error
     content = None
     crawl_method = None
     
-    # 知乎链接直接使用Selenium
+    # Use Selenium directly for Zhihu links
     if "zhihu.com" in url:
-        print(f"{progress_info} 检测到知乎链接，直接使用Selenium爬取: {title} - {url}")
+        print(f"{progress_info} Detected Zhihu link, using Selenium directly for crawl: {title} - {url}")
         content = fetch_with_selenium(url, current_idx, total_count, title)
         crawl_method = "selenium"
         
-        # 记录爬取结果
+        # Record crawl result
         if content:
-            print(f"{progress_info} 成功爬取知乎内容: {title} - {url}，内容长度: {len(content)} 字符")
+            print(f"{progress_info} Successfully crawled Zhihu content: {title} - {url}, content length: {len(content)} characters")
         else:
-            print(f"{progress_info} 爬取知乎内容失败: {title} - {url}")
-            return None, {"url": url, "title": title, "reason": "知乎内容爬取失败", "timestamp": datetime.now().isoformat()}
+            print(f"{progress_info} Failed to crawl Zhihu content: {title} - {url}")
+            return None, {"url": url, "title": title, "reason": "Zhihu content crawl failed", "timestamp": datetime.now().isoformat()}
     else:
         try:
-            print(f"{progress_info} 开始爬取: {title} - {url}")
+            print(f"{progress_info} Starting crawl: {title} - {url}")
             session = create_session()
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+                "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7" # Changed to prioritize English
             }
             response = session.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             
-            # 检测响应内容的编码
+            # Detect response content encoding
             detected_encoding = chardet.detect(response.content)
             if detected_encoding['confidence'] > 0.7:
                 response.encoding = detected_encoding['encoding']
             
-            # 检查内容类型，确保是HTML或文本
+            # Check content type to ensure it is HTML or text
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' not in content_type.lower() and 'text/plain' not in content_type.lower():
-                error_msg = f"非文本内容 (Content-Type: {content_type})"
-                print(f"{progress_info} 跳过{error_msg}: {title} - {url}")
+                error_msg = f"Non-text content (Content-Type: {content_type})"
+                print(f"{progress_info} Skipping {error_msg}: {title} - {url}")
                 failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
                 return None, failed_info
                 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # 提取标题
+            # Extract title
             if soup.title:
-                title = soup.title.string if soup.title.string else "无标题"
+                title = soup.title.string if soup.title.string else "No Title"
             else:
-                title = "无标题"
+                title = "No Title"
             
-            # 移除不需要的元素，如脚本、样式、导航等
+            # Remove unnecessary elements like scripts, styles, navigation, etc.
             for element in soup(['script', 'style', 'nav', 'footer', 'header', 'meta', 'link']):
                 element.decompose()
             
-            # 直接获取整个页面的文本内容
+            # Get the full text content of the page directly
             full_text = soup.get_text(separator='\n')
             
-            # 清理文本
+            # Clean up text
             content = clean_text(full_text)
             crawl_method = "requests"
         except Exception as e:
-            error_msg = f"请求失败: {str(e)}"
+            error_msg = f"Request failed: {str(e)}"
             print(f"{progress_info} {error_msg}: {title} - {url}")
             failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
             return None, failed_info
     
-    # 特殊网站或常规爬取失败，尝试使用Selenium
+    # If content is empty after regular crawl or for special sites, try Selenium
     if content is None or (isinstance(content, str) and not content.strip()):
-        print(f"{progress_info} 常规爬取内容为空，尝试使用Selenium: {title} - {url}")
+        print(f"{progress_info} Regular crawl content is empty, attempting Selenium: {title} - {url}")
         content = fetch_with_selenium(url, current_idx, total_count, title)
         crawl_method = "selenium"
         
-        # 记录Selenium爬取结果
+        # Record Selenium crawl result
         if content:
-            print(f"{progress_info} Selenium成功爬取 {url}，内容长度: {len(content)} 字符")
+            print(f"{progress_info} Selenium successfully crawled {url}, content length: {len(content)} characters")
         else:
-            print(f"{progress_info} Selenium爬取失败或内容为空: {url}")
+            print(f"{progress_info} Selenium crawl failed or content is empty: {url}")
     
-    # 修复可能的编码问题
+    # Fix possible encoding issues
     if title:
         title = fix_encoding(title)
     else:
-        title = "无标题"
+        title = "No Title"
         
     if content and isinstance(content, str):
         content = fix_encoding(content)
     else:
         content = ""
     
-    # 检查内容是否为空
+    # Check if content is empty
     if not content or not content.strip():
-        error_msg = "提取的内容为空"
+        error_msg = "Extracted content is empty"
         print(f"{progress_info} {error_msg}: {title} - {url}")
         failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
         return None, failed_info
             
-    # 创建包含内容的书签副本
+    # Create a copy of the bookmark including the content
     bookmark_with_content = bookmark.copy()
     bookmark_with_content["title"] = title
     bookmark_with_content["content"] = content
@@ -896,40 +899,40 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     bookmark_with_content["crawl_time"] = datetime.now().isoformat()
     bookmark_with_content["crawl_method"] = crawl_method
     
-    print(f"{progress_info} 成功爬取: {title} - {url}，内容长度: {len(content)} 字符")
+    print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
     return bookmark_with_content, None
 
-# 并行爬取书签内容
+# Parallel crawl bookmark content
 def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
     if limit:
-        print(f"根据配置限制，只处理前 {limit} 个书签")
+        print(f"Processing only the first {limit} bookmarks based on configuration limit")
         bookmarks_to_process = bookmarks[:limit]
     else:
-        print(f"处理全部 {len(bookmarks)} 个书签")
+        print(f"Processing all {len(bookmarks)} bookmarks")
         bookmarks_to_process = bookmarks
     
     bookmarks_with_content = []
     failed_records = []
     
-    # 使用 ThreadPoolExecutor 并行爬取书签内容
+    # Use ThreadPoolExecutor for parallel crawling of bookmark content
     start_time = time.time()
     total_count = len(bookmarks_to_process)
-    print(f"开始并行爬取书签内容，最大并发数: {max_workers}，总数: {total_count}")
-    print(f"开始时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
+    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 创建一个列表来存储所有任务
+    # Create a list to store all tasks
     futures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
+        # Submit all tasks
         for idx, bookmark in enumerate(bookmarks_to_process):
-            # 在提交任务前打印进度
-            title = bookmark.get("name", "无标题")
-            print(f"提交任务 [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
+            # Print progress before submitting the task
+            title = bookmark.get("name", "No Title")
+            print(f"Submitting task [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
             future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count)
             futures.append(future)
         
-        # 使用tqdm创建进度条
-        for future in tqdm(futures, total=len(futures), desc="爬取进度"):
+        # Use tqdm to create a progress bar
+        for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
             result, failed_info = future.result()
             if result:
                 bookmarks_with_content.append(result)
@@ -937,20 +940,20 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
                 failed_records.append(failed_info)
     
     end_time = time.time()
-    print(f"结束时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 打印耗时信息
+    # Print elapsed time information
     elapsed_time = end_time - start_time
     elapsed_minutes = elapsed_time / 60
     if elapsed_time > 60:
-        print(f"并行爬取书签内容总耗时: {elapsed_minutes:.2f}分钟 ({elapsed_time:.2f}秒)")
+        print(f"Total time for parallel bookmark crawl: {elapsed_minutes:.2f} minutes ({elapsed_time:.2f} seconds)")
     else:
-        print(f"并行爬取书签内容总耗时: {elapsed_time:.2f}秒")
+        print(f"Total time for parallel bookmark crawl: {elapsed_time:.2f} seconds")
     
-    # 计算每个书签的平均处理时间
+    # Calculate average processing time per bookmark
     if total_count > 0:
         avg_time_per_bookmark = elapsed_time / total_count
-        print(f"平均每个书签处理时间: {avg_time_per_bookmark:.2f}秒")
+        print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
     
     return bookmarks_with_content, failed_records
 
@@ -1004,133 +1007,136 @@ def main():
     # --------------------------------------------------------------------
     
     # Read configuration from environment variables, command-line arguments take precedence
-    bookmark_limit = args.limit if args.limit is not None else int(os.getenv("BOOKMARK_LIMIT", "0"))  # 默认不限制
-    max_workers = args.workers if args.workers is not None else int(os.getenv("MAX_WORKERS", "20"))  # 默认20个工作线程
-    generate_summary = not args.no_summary if args.no_summary is not None else os.getenv("GENERATE_SUMMARY", "true").lower() in ("true", "1", "yes")  # 默认生成摘要
+    bookmark_limit = args.limit if args.limit is not None else int(os.getenv("BOOKMARK_LIMIT", "0"))  # Default: no limit
+    max_workers = args.workers if args.workers is not None else int(os.getenv("MAX_WORKERS", "20"))  # Default: 20 worker threads
+    generate_summary_flag = not args.no_summary if args.no_summary is not None else os.getenv("GENERATE_SUMMARY", "true").lower() in ("true", "1", "yes")  # Default: generate summary
     
-    # 如果使用--from-json参数，直接从JSON文件读取并生成摘要
+    # If the --from-json argument is used, read directly from the JSON file and generate summaries
     if args.from_json:
-        print("从已有的bookmarks_with_content.json生成摘要...")
+        print("Generating summaries from existing bookmarks_with_content.json...")
         try:
             with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
                 bookmarks_with_content = json.load(f)
             
             if not bookmarks_with_content:
-                print("错误：bookmarks_with_content.json为空或格式不正确")
+                print("Error: bookmarks_with_content.json is empty or incorrectly formatted")
                 return
                 
             if bookmark_limit > 0:
-                print(f"根据限制只处理前{bookmark_limit}个书签")
+                print(f"Processing only the first {bookmark_limit} bookmarks based on limit")
                 bookmarks_with_content = bookmarks_with_content[:bookmark_limit]
                 
-            # 配置模型并生成摘要
+            # Configure model and generate summaries
             model_config = ModelConfig()
             
-            # 测试API连接
+            # Test API connection
             if not test_api_connection(model_config):
-                print("LLM API连接失败，请检查配置后重试。", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
+                print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
                 return
                 
-            # 为内容生成摘要
+            # Generate summaries for content
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
             
-            # 保存更新后的内容
+            # Save the updated content
             with open(bookmarks_with_content_path, "w", encoding="utf-8") as output_file:
                 json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
                 
-            print(f"摘要生成完成，已更新 {bookmarks_with_content_path}")
+            print(f"Summary generation complete, {bookmarks_with_content_path} updated")
             return
             
         except FileNotFoundError:
-            print(f"错误：找不到文件 {bookmarks_with_content_path}")
+            print(f"Error: File not found {bookmarks_with_content_path}")
             return
         except json.JSONDecodeError:
-            print(f"错误：{bookmarks_with_content_path} 不是有效的JSON文件")
+            print(f"Error: {bookmarks_with_content_path} is not a valid JSON file")
             return
         except Exception as e:
-            print(f"处理JSON文件时出错：{str(e)}")
+            print(f"Error processing JSON file: {str(e)}")
             return
     
-    # 原有的爬取逻辑
-    print(f"配置信息:")
-    print(f"  - 书签数量限制: {bookmark_limit if bookmark_limit > 0 else '不限制'}")
-    print(f"  - 并行工作线程: {max_workers}")
-    print(f"  - 是否生成摘要: {'是' if generate_summary else '否'}")
+    # Original crawling logic
+    print(f"Configuration:")
+    print(f"  - Bookmark Limit: {bookmark_limit if bookmark_limit > 0 else 'No Limit'}")
+    print(f"  - Parallel Workers: {max_workers}")
+    print(f"  - Generate Summary: {'Yes' if generate_summary_flag else 'No'}")
     
-    # 获取书签数据
+    # Get bookmark data
     bookmarks = get_bookmarks(bookmark_path)
     
-    # 过滤书签，去除空 URL、10.0.网段的URL和不符合条件的
+    # Filter bookmarks: remove empty URLs, 10.0. network URLs, and non-qualifying types
     filtered_bookmarks = []
     for bookmark in bookmarks:
         url = bookmark["url"]
-        # 检查是否为空URL、是否包含taihealth、是否为URL类型、是否为扩展程序、是否为10.0.网段
+        # Check for empty URL, URL type, not "Extension" name, and not 10.0. network URL
         if (url and 
             bookmark["type"] == "url" and 
-            bookmark["name"] != "扩展程序" and
+            bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
             not re.match(r"https?://10\.0\.", url)):
             filtered_bookmarks.append(bookmark)
     
-    # 保存过滤后的书签数据
+    # Save filtered bookmark data
     with open(bookmarks_path, "w", encoding="utf-8") as output_file:
         json.dump(filtered_bookmarks, output_file, ensure_ascii=False, indent=4)
     
-    # 并行爬取书签内容
+    # Parallel crawl bookmark content
     bookmarks_with_content, failed_records = parallel_fetch_bookmarks(
         filtered_bookmarks, 
         max_workers=max_workers, 
         limit=bookmark_limit if bookmark_limit > 0 else None
     )
     
-    # 只有在需要生成摘要时才执行下面的代码
-    if generate_summary and bookmarks_with_content:
-        # 配置模型
+    # Only execute the following code if summary generation is enabled
+    if generate_summary_flag and bookmarks_with_content:
+        # Configure model
         model_config = ModelConfig()
         
-        # 测试API连接
+        # Test API connection
         if not test_api_connection(model_config):
-            print("LLM API连接失败，请检查配置后重试。", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
-            print("跳过摘要生成步骤...")
+            print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
+            print("Skipping summary generation step...")
         else:
-            # 为爬取的内容生成摘要
+            # Generate summaries for the crawled content
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
-    elif not generate_summary:
-        print("根据配置跳过摘要生成步骤...")
+    elif not generate_summary_flag:
+        print("Skipping summary generation step based on configuration...")
 
-    # 保存带内容的书签数据
+    # Save bookmark data with content
     with open(bookmarks_with_content_path, "w", encoding="utf-8") as output_file:
         json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
     
-    # 保存失败的URL及原因
+    # Save failed URLs and reasons
     with open(failed_urls_path, "w", encoding="utf-8") as f:
         json.dump(failed_records, f, ensure_ascii=False, indent=4)
     
-    print(f"共提取 {len(filtered_bookmarks)} 个有效书签，已保存到 {bookmarks_path}")
-    print(f"成功爬取 {len(bookmarks_with_content)} 个书签的内容，已保存到 {bookmarks_with_content_path}")
-    print(f"爬取失败 {len(failed_records)} 个URL，详细信息已保存到 {failed_urls_path}")
+    print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
+    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {bookmarks_with_content_path}")
+    print(f"Failed to crawl {len(failed_records)} URLs, details saved to {failed_urls_path}")
     
-    # 打印失败的URL及标题列表，便于查看
+    # Print list of failed URLs and titles for easy viewing
     if failed_records:
-        print("\n爬取失败的URL及标题:")
+        print("\nFailed URLs and Titles:")
         for idx, record in enumerate(failed_records):
-            print(f"{idx+1}. {record.get('title', '无标题')} - {record['url']} - 原因: {record['reason']}")
+            print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
     
-    # 显示内容长度统计
+    # Display content length statistics
     if bookmarks_with_content:
         total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)
         avg_length = total_length / len(bookmarks_with_content)
-        print(f"爬取内容平均长度: {avg_length:.2f} 字符")
-        print(f"最长内容: {max(b.get('content_length', 0) for b in bookmarks_with_content)} 字符")
-        print(f"最短内容: {min(b.get('content_length', 0) for b in bookmarks_with_content)} 字符")
+        print(f"Average crawled content length: {avg_length:.2f} characters")
+        print(f"Longest content: {max(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
+        print(f"Shortest content: {min(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
         
-        # 统计使用的爬取方法
+        # Statistics on crawl methods used
         selenium_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "selenium")
         requests_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "requests")
-        print(f"使用Selenium爬取: {selenium_count} 个")
-        print(f"使用Requests爬取: {requests_count} 个")
+        print(f"Crawled using Selenium: {selenium_count} items")
+        print(f"Crawled using Requests: {requests_count} items")
 
-def fetch_zhihu_content(url, current_idx=None, total_count=None, title="无标题"):
-    """专门处理知乎链接"""
+# This function is redundant as its logic is mostly covered by fetch_with_selenium, 
+# but it was present in the original file. I will translate it and keep it for completeness, 
+# but it is not called in main().
+def fetch_zhihu_content(url, current_idx=None, total_count=None, title="No Title"):
+    """Specifically handles Zhihu links"""
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
     
     options = Options()
@@ -1138,44 +1144,45 @@ def fetch_zhihu_content(url, current_idx=None, total_count=None, title="无标�
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    # 添加更真实的用户代理
+    # Add a more realistic user agent
     options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36')
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     
     try:
-        print(f"{progress_info} 使用专门方法爬取知乎内容: {title} - {url}")
+        print(f"{progress_info} Using dedicated method to crawl Zhihu content: {title} - {url}")
         driver.get(url)
-        # 等待页面加载
+        # Wait for page to load
         time.sleep(3)
         
-        # 检测登录弹窗并关闭
+        # Detect and close login pop-up
         try:
-            login_close = driver.find_element_by_css_selector('.Modal-closeButton')
+            # Note: find_element_by_css_selector is deprecated, but keeping the original logic structure
+            login_close = driver.find_element("css selector", '.Modal-closeButton')
             login_close.click()
-            print(f"{progress_info} 成功关闭知乎登录弹窗")
+            print(f"{progress_info} Successfully closed Zhihu login pop-up")
             time.sleep(1)
         except Exception as e:
-            print(f"{progress_info} 关闭知乎登录弹窗失败或无需关闭: {title} - {str(e)}")
+            print(f"{progress_info} Failed to close Zhihu login pop-up or no need to close: {title} - {str(e)}")
         
-        # 获取页面内容
+        # Get page content
         content = driver.page_source
         soup = BeautifulSoup(content, 'html.parser')
         
-        # 提取主要内容
+        # Extract main content
         article = soup.select_one('.Post-RichText') or soup.select_one('.RichText')
         if article:
             result = article.get_text()
-            print(f"{progress_info} 成功提取知乎文章内容: {title}，长度: {len(result)} 字符")
+            print(f"{progress_info} Successfully extracted Zhihu article content: {title}, length: {len(result)} characters")
             return result
         else:
             result = soup.get_text()
-            print(f"{progress_info} 未找到知乎文章主体，使用全文: {title}，长度: {len(result)} 字符")
+            print(f"{progress_info} Zhihu article body not found, using full text: {title}, length: {len(result)} characters")
             return result
     
     except Exception as e:
-        print(f"{progress_info} 知乎爬取异常: {title} - {url} - {str(e)}")
+        print(f"{progress_info} Zhihu crawl exception: {title} - {url} - {str(e)}")
         return None
     finally:
         driver.quit()

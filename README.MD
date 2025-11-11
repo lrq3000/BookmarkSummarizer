@@ -78,6 +78,11 @@ python crawl.py --no-summary
 python crawl.py --from-json
 ```
 
+**Use run_with_env.py to use a global env file for the current terminal session**:
+```bash
+python run_with_env.py --env ./env.env "python ./crawl.py -p 'C:\Users\Username\AppData\Local\Chromium\User Data\Profile 1' --limit 10"
+```
+
 ## 📋 Detailed Features
 
 ### Bookmark Crawling

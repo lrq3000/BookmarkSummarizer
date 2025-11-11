@@ -135,6 +135,8 @@ MAX_WORKERS=20  # Number of parallel worker threads
 GENERATE_SUMMARY=true  # Whether to generate summaries
 ```
 
+Note: Make sure there are NO comments in the file (especially inline comments), otherwise it may fail to be parsed correctly.
+
 ## 🤝 Contributing
 
 Pull Requests are welcome! For any issues or suggestions, please create an Issue.

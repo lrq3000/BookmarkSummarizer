@@ -35,8 +35,17 @@ from tqdm import tqdm
 import traceback
 
 
-# Chrome 书签文件路径
-bookmark_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Bookmarks")
+# --- Chrome Profile and Bookmark Path Configuration ---
+# Default Chrome Profile directory path (macOS example)
+# NOTE: Default paths vary by OS (Windows/Linux). Users should specify the path
+# via the command-line argument or modify this default for their system.
+DEFAULT_CHROME_PROFILE_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default")
+DEFAULT_BOOKMARK_FILENAME = "Bookmarks"
+
+# Initial bookmark file path, which will be updated in main() based on command-line arguments
+bookmark_path = os.path.join(DEFAULT_CHROME_PROFILE_DIR, DEFAULT_BOOKMARK_FILENAME)
+# ----------------------------------------------------
+
 bookmarks_path = os.path.expanduser("./bookmarks.json")
 bookmarks_with_content_path = os.path.expanduser("./bookmarks_with_content.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
@@ -941,21 +950,56 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
     
     return bookmarks_with_content, failed_records
 
-# 解析命令行参数
+# Parse command-line arguments
 def parse_args():
-    parser = argparse.ArgumentParser(description='爬取Chrome书签并构建知识库')
-    parser.add_argument('--limit', type=int, help='限制处理的书签数量，0表示不限制')
-    parser.add_argument('--workers', type=int, help='并行爬取的工作线程数')
-    parser.add_argument('--no-summary', action='store_true', help='跳过摘要生成步骤')
-    parser.add_argument('--from-json', action='store_true', help='从已有的bookmarks_with_content.json生成摘要')
+    # Create the argument parser with a clear description of the application's purpose.
+    parser = argparse.ArgumentParser(description='Crawl Chrome bookmarks and build a knowledge base')
+    
+    # Argument for limiting the number of bookmarks to process.
+    parser.add_argument('--limit', type=int, help='Limit the number of bookmarks to process (0 for no limit)')
+    
+    # Argument for setting the number of concurrent workers for parallel fetching.
+    parser.add_argument('--workers', type=int, help='Number of worker threads for parallel fetching')
+    
+    # Flag to skip the summary generation step, useful for content fetching only.
+    parser.add_argument('--no-summary', action='store_true', help='Skip the summary generation step')
+    
+    # Flag to generate summaries from an existing content file, skipping the crawl.
+    parser.add_argument('--from-json', action='store_true', help='Generate summaries from existing bookmarks_with_content.json')
+    
+    # Add optional command-line argument to specify a custom Chrome Profile directory path.
+    # This allows the application to read bookmarks from a different Chrome profile (e.g., 'Profile 1').
+    # Example paths:
+    # Windows: C:\Users\<username>\AppData\Local\Google\Chrome\User Data\Profile 1
+    # Linux: ~/.config/google-chrome/Profile 1
+    # macOS: ~/Library/Application Support/Google/Chrome/Profile 1
+    parser.add_argument(
+        '--profile-path',
+        '-p',
+        type=str,
+        default=DEFAULT_CHROME_PROFILE_DIR,
+        help=f'Specify a custom path to the Chrome Profile directory (e.g., "Default" or "Profile 1"). Default: {DEFAULT_CHROME_PROFILE_DIR}'
+    )
     return parser.parse_args()
 
-# 主函数
+# Main function to orchestrate the bookmark crawling and summarization process.
 def main():
-    # 解析命令行参数
+    # Parse command-line arguments
     args = parse_args()
     
-    # 从环境变量读取配置，命令行参数优先
+    # --- Update Global Path Configuration based on Command-Line Argument ---
+    # If the user provided a custom profile path, update the global bookmark file path.
+    global bookmark_path
+    if args.profile_path != DEFAULT_CHROME_PROFILE_DIR:
+        # Use the user-provided path and the default bookmark filename to construct the new path.
+        # os.path.expanduser() handles the ~ symbol for cross-platform compatibility.
+        new_profile_dir = os.path.expanduser(args.profile_path)
+        bookmark_path = os.path.join(new_profile_dir, DEFAULT_BOOKMARK_FILENAME)
+        print(f"Using custom Chrome Profile path: {new_profile_dir}")
+        print(f"Bookmark file path updated to: {bookmark_path}")
+    # --------------------------------------------------------------------
+    
+    # Read configuration from environment variables, command-line arguments take precedence
     bookmark_limit = args.limit if args.limit is not None else int(os.getenv("BOOKMARK_LIMIT", "0"))  # 默认不限制
     max_workers = args.workers if args.workers is not None else int(os.getenv("MAX_WORKERS", "20"))  # 默认20个工作线程
     generate_summary = not args.no_summary if args.no_summary is not None else os.getenv("GENERATE_SUMMARY", "true").lower() in ("true", "1", "yes")  # 默认生成摘要

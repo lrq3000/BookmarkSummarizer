@@ -122,10 +122,10 @@ In addition to command-line parameters, you can set the following environment va
 MODEL_TYPE=ollama  # openai, deepseek, qwen, ollama
 API_KEY=your_api_key_here
 API_BASE=http://localhost:11434
-MODEL_NAME=llama2
+MODEL_NAME=gemma3:1b
 
 # Content Processing Settings
-MAX_TOKENS=1000  # Maximum number of tokens for summary generation
+MAX_TOKENS=1024  # Maximum number of tokens for summary generation
 MAX_INPUT_CONTENT_LENGTH=6000  # Maximum length of input content
 TEMPERATURE=0.3  # Randomness of summary generation
 

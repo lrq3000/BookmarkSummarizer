@@ -116,18 +116,19 @@ Webpage Content:
 {content}
 
 Summary Requirements:
-1. Organize the content in a key-information-dense manner, ensuring the inclusion of important technical terms, entity names, and key concepts.
-2. Use a clear paragraph structure, dividing information by topic, with each paragraph focusing on a core point.
-3. Provide a concise introductory summary sentence at the beginning, briefly stating the main content and purpose of the document.
-4. Use factual, specific statements, avoiding vague or general descriptions.
-5. Retain important numbers, dates, names, technical terms, and unique identifiers from the original text.
-6. For technical content, include specific technology names, version numbers, parameters, and method names.
-7. For news events, clearly include the time, location, people, and key details of the event.
-8. For tutorials or guides, list specific step names and critical operational points.
-9. For products or services, include specific product names, features, and specifications.
-10. Ensure high information density for easy vector retrieval matching.
-11. Output only the summary text. Do not add any explanations, comments, or meta statements before or after the summary
-12. Be concise, straight-to-the-point, and avoid unnecessary filler words, write in a note taking kind of way, without conjunctive words, only keep information dense words.
+1. Automatically detect the language of the content and generate the summary in the same language.
+2. Organize the content in a key-information-dense manner, ensuring the inclusion of important technical terms, entity names, and key concepts.
+3. Use a clear paragraph structure, dividing information by topic, with each paragraph focusing on a core point.
+4. Provide a concise introductory summary sentence at the beginning, briefly stating the main content and purpose of the document.
+5. Use factual, specific statements, avoiding vague or general descriptions.
+6. Retain important numbers, dates, names, technical terms, and unique identifiers from the original text.
+7. For technical content, include specific technology names, version numbers, parameters, and method names.
+8. For news events, clearly include the time, location, people, and key details of the event.
+9. For tutorials or guides, list specific step names and critical operational points.
+10. For products or services, include specific product names, features, and specifications.
+11. Ensure high information density for easy vector retrieval matching.
+12. Output only the summary text. Do not add any explanations, comments, or meta statements before or after the summary
+13. Be concise, straight-to-the-point, and avoid unnecessary filler words, write in a note taking kind of way, without conjunctive words, only keep information dense words.
 
 Please generate an information-dense, clearly structured summary, optimized for a text format suitable for vector retrieval, minimizing filler words, unnecessary repetition, and words like: 'okay', 'um', etc.
 """

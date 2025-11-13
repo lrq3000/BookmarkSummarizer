@@ -1,5 +1,7 @@
 # BookmarkSummarizer (书签大脑)
 
+## BEWARE: THIS README IS OUTDATED, PLEASE READ THE ENGLISH README.MD INSTEAD
+
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.6+-blue.svg" alt="Python">

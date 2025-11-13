@@ -21,7 +21,6 @@ import time
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
-from dotenv import load_dotenv
 from urllib3.util.retry import Retry
 from datetime import datetime
 from selenium import webdriver
@@ -35,6 +34,12 @@ from tqdm import tqdm
 import traceback
 from browser_history.browsers import *
 
+# TOML parsing imports with fallback for older Python versions
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    import tomli as tomllib  # Fallback for older versions
+
 
 # --- Browser Profile Configuration ---
 # Default profile paths are handled by browser_history module
@@ -45,8 +50,27 @@ bookmarks_path = os.path.expanduser("./bookmarks.json")
 bookmarks_with_content_path = os.path.expanduser("./bookmarks_with_content.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
 
-# Load environment variables
-load_dotenv()
+# Load TOML configuration
+def load_config(config_path="default_config.toml"):
+    """
+    Load configuration from TOML file.
+
+    Parameters:
+        config_path (str): Path to the TOML configuration file.
+
+    Returns:
+        dict: Configuration dictionary loaded from TOML file.
+    """
+    try:
+        with open(config_path, "rb") as f:
+            config = tomllib.load(f)
+        return config
+    except FileNotFoundError:
+        print(f"Warning: Configuration file '{config_path}' not found. Using default values.")
+        return {}
+    except Exception as e:
+        print(f"Warning: Error loading configuration from '{config_path}': {e}. Using default values.")
+        return {}
 
 # Configuration settings
 class ModelConfig:
@@ -56,27 +80,44 @@ class ModelConfig:
     QWEN = "qwen"
     OLLAMA = "ollama"  # Added Ollama model type
 
-    def __init__(self):
-        # Default configuration
-        self.model_type = os.getenv("MODEL_TYPE", self.OPENAI)
-        self.api_key = os.getenv("API_KEY", "")
-        self.api_base = os.getenv("API_BASE", "https://api.openai.com/v1")
-        self.model_name = os.getenv("MODEL_NAME", "gpt-3.5-turbo")
-        self.max_tokens = int(os.getenv("MAX_TOKENS", "1000"))
-        self.max_input_content_length = int(os.getenv("MAX_INPUT_CONTENT_LENGTH", "6000"))
-        self.temperature = float(os.getenv("TEMPERATURE", "0.3"))
-        
-        # DeepSeek specific configuration
-        self.top_p = float(os.getenv("TOP_P", "0.7"))
-        self.top_k = int(os.getenv("TOP_K", "50"))
-        self.frequency_penalty = float(os.getenv("FREQUENCY_PENALTY", "0.5"))
-        self.system_prompt = os.getenv("SYSTEM_PROMPT", "")
-        self.use_tools = os.getenv("USE_TOOLS", "").lower() in ("true", "1", "yes")
-        
+    def __init__(self, config_data=None):
+        """
+        Initialize ModelConfig with TOML configuration data.
+
+        Parameters:
+            config_data (dict, optional): Configuration dictionary from TOML file.
+                                         If None, uses default values.
+        """
+        if config_data is None:
+            config_data = {}
+
+        # Extract model section from config
+        model_config = config_data.get("model", {})
+
+        # Default configuration with TOML overrides
+        self.model_type = model_config.get("model_type", self.OPENAI)
+        self.api_key = model_config.get("api_key", "")
+        self.api_base = model_config.get("api_base", "https://api.openai.com/v1")
+        self.model_name = model_config.get("model_name", "gpt-3.5-turbo")
+        self.max_tokens = model_config.get("max_tokens", 1000)
+        self.temperature = model_config.get("temperature", 0.3)
+
+        # Extract crawl section from config
+        crawl_config = config_data.get("crawl", {})
+        self.max_input_content_length = crawl_config.get("max_input_content_length", 6000)
+        self.generate_summary = crawl_config.get("generate_summary", True)
+
+        # DeepSeek specific configuration (keeping defaults for backward compatibility)
+        self.top_p = model_config.get("top_p", 0.7)
+        self.top_k = model_config.get("top_k", 50)
+        self.frequency_penalty = model_config.get("frequency_penalty", 0.5)
+        self.system_prompt = model_config.get("system_prompt", "")
+        self.use_tools = model_config.get("use_tools", False)
+
         # Qwen specific configuration
-        self.qwen_api_version = os.getenv("QWEN_API_VERSION", "2023-12-01-preview")
+        self.qwen_api_version = model_config.get("qwen_api_version", "2023-12-01-preview")
         # Ollama specific configuration
-        self.ollama_format = os.getenv("OLLAMA_FORMAT", "text")  # Options: json, text
+        self.ollama_format = model_config.get("ollama_format", "text")  # Options: json, text
 
 # Generate summary using a Large Language Model (LLM)
 def generate_summary(title, content, url, config=None):
@@ -1027,6 +1068,14 @@ def parse_args():
         type=str,
         help='Specify a custom path to the browser profile directory. Used in conjunction with --browser.'
     )
+
+    # Add optional command-line argument to specify a custom config file path.
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='default_config.toml',
+        help='Path to the TOML configuration file (default: default_config.toml)'
+    )
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -1034,10 +1083,13 @@ def main():
     # Parse command-line arguments
     args = parse_args()
 
-    # Read configuration from environment variables, command-line arguments take precedence
-    bookmark_limit = args.limit if args.limit is not None else int(os.getenv("BOOKMARK_LIMIT", "0"))  # Default: no limit
-    max_workers = args.workers if args.workers is not None else int(os.getenv("MAX_WORKERS", "20"))  # Default: 20 worker threads
-    generate_summary_flag = not args.no_summary if args.no_summary is not None else os.getenv("GENERATE_SUMMARY", "true").lower() in ("true", "1", "yes")  # Default: generate summary
+    # Load TOML configuration
+    config_data = load_config(args.config)
+
+    # Read configuration from TOML file, command-line arguments take precedence
+    bookmark_limit = args.limit if args.limit is not None else 0  # Default: no limit
+    max_workers = args.workers if args.workers is not None else 20  # Default: 20 worker threads
+    generate_summary_flag = not args.no_summary  # Command-line flag overrides config
 
     # If the --from-json argument is used, read directly from the JSON file and generate summaries
     if args.from_json:
@@ -1055,7 +1107,7 @@ def main():
                 bookmarks_with_content = bookmarks_with_content[:bookmark_limit]
 
             # Configure model and generate summaries
-            model_config = ModelConfig()
+            model_config = ModelConfig(config_data)
 
             # Test API connection
             if not test_api_connection(model_config):
@@ -1118,7 +1170,7 @@ def main():
     # Only execute the following code if summary generation is enabled
     if generate_summary_flag and bookmarks_with_content:
         # Configure model
-        model_config = ModelConfig()
+        model_config = ModelConfig(config_data)
         
         # Test API connection
         if not test_api_connection(model_config):

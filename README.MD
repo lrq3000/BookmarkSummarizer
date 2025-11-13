@@ -42,14 +42,14 @@ cd BookmarkSummarizer
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables (create a `.env` file):
+3. Make a TOML configuration file to finetune behavior (create a `.toml` file):
 ```
-MODEL_TYPE=ollama  # Options: openai, deepseek, qwen, ollama
-API_KEY=your_api_key_here
-API_BASE=http://localhost:11434  # Ollama local endpoint or other model API address
-MODEL_NAME=llama2  # Or other supported model
-MAX_TOKENS=1000
-TEMPERATURE=0.3
+model_type=ollama  # options: openai, deepseek, qwen, ollama
+api_key=your_api_key_here
+api_base=http://localhost:11434  # ollama local endpoint or other model api address
+model_name=gemma3:1b  # or other supported model
+max_tokens=1000
+temperature=0.3
 ```
 
 ### Usage
@@ -61,14 +61,14 @@ TEMPERATURE=0.3
    pip install -r requirements.txt
    ```
 
-2. **Configure Environment Variables** (optional, create a `.env` file):
+2. **Make a TOML configuration file** (optional if you use ollama and the default model):
    ```
-   MODEL_TYPE=ollama  # Options: openai, deepseek, qwen, ollama
-   API_KEY=your_api_key_here
-   API_BASE=http://localhost:11434  # Ollama local endpoint or other model API address
-   MODEL_NAME=llama2  # Or other supported model
-   MAX_TOKENS=1000
-   TEMPERATURE=0.3
+   model_type=ollama  # options: openai, deepseek, qwen, ollama
+   api_key=your_api_key_here
+   api_base=http://localhost:11434  # ollama local endpoint or other model api address
+   model_name=gemma3:1b  # or other supported model
+   max_tokens=1000
+   temperature=0.3
    ```
 
 #### Fetch Bookmarks from Browsers
@@ -135,10 +135,6 @@ python crawl.py --from-json
 ```
 Generates summaries for existing `bookmarks_with_content.json` without re-crawling.
 
-**Use run_with_env.py to use a global env file for the current terminal session**:
-```bash
-python run_with_env.py --env ./env.env "python ./crawl.py --browser chrome --profile-path 'C:\Users\Username\AppData\Local\Chromium\User Data\Profile 1' --limit 10"
-```
 
 #### Search Through Bookmarks
 
@@ -195,27 +191,25 @@ BookmarkSummarizer uses advanced large language models to generate high-quality 
 
 ## 🔧 Custom Configuration
 
-In addition to command-line parameters, you can set the following environment variables through the `.env` file:
+In addition to command-line parameters, you can set the following parameters through a `.toml` configuration file:
 
 ```
-# Model Type Settings
-MODEL_TYPE=ollama  # openai, deepseek, qwen, ollama
-API_KEY=your_api_key_here
-API_BASE=http://localhost:11434
-MODEL_NAME=gemma3:1b
+# model type settings
+model_type=ollama  # openai, deepseek, qwen, ollama
+api_key=your_api_key_here
+api_base=http://localhost:11434
+model_name=gemma3:1b
 
-# Content Processing Settings
-MAX_TOKENS=1024  # Maximum number of tokens for summary generation
-MAX_INPUT_CONTENT_LENGTH=6000  # Maximum length of input content
-TEMPERATURE=0.3  # Randomness of summary generation
+# content processing settings
+max_tokens=1024  # maximum number of tokens for summary generation
+max_input_content_length=6000  # maximum length of input content
+temperature=0.3  # randomness of summary generation
 
-# Crawler Settings
-BOOKMARK_LIMIT=0  # No limit by default
-MAX_WORKERS=20  # Number of parallel worker threads
-GENERATE_SUMMARY=true  # Whether to generate summaries
+# crawler settings
+bookmark_limit=0  # no limit by default
+max_workers=20  # number of parallel worker threads
+generate_summary=true  # whether to generate summaries
 ```
-
-Note: Make sure there are NO comments in the file (especially inline comments), otherwise it may fail to be parsed correctly.
 
 ## 🤝 Contributing
 

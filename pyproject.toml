@@ -28,6 +28,8 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
     "Topic :: Text Processing :: Indexing",
     "Topic :: Utilities"
@@ -47,6 +49,7 @@ dependencies = [
     "fastapi==0.104.1",
     "uvicorn[standard]==0.24.0",
     "browser-history",
+    "tomli; python_version < \"3.11\"",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +67,6 @@ Issues = "https://github.com/wyj/BookmarkSummarizer/issues"
 [project.scripts]
 crawl = "crawl:main"
 fuzzy-search = "fuzzy_bookmark_search:main"
-run-with-env = "run_with_env:main"
 
 [tool.setuptools]
 zip-safe = false

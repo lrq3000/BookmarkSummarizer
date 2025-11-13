@@ -12,11 +12,11 @@ BookmarkSummarizer is a powerful tool that crawls your Chrome bookmarks, generat
 
 ## ✨ Key Features
 
-- 🔍 **Smart Bookmark Crawling**: Automatically extract content from Chrome bookmarks
+- 🔍 **Smart Bookmark Crawling**: Automatically extract content from Chrome bookmarks by fetching the bookmarks' URLs webpages content.
 - 🤖 **AI Summary Generation**: Create high-quality summaries for each bookmark using large language models
 - 🔄 **Parallel Processing**: Efficient multi-threaded crawling to significantly reduce processing time
-- 🌐 **Multiple Model Support**: Compatible with OpenAI, Deepseek, Qwen, and Ollama models
-- 💾 **Checkpoint Recovery**: Continue processing after interruptions without losing completed work
+- 🌐 **Multiple Model Support**: Compatible with OpenAI, Deepseek, Qwen, and Ollama offline models
+- 💾 **Incremental Update And Checkpoint Recovery**: Update the database with new bookmarks or continue processing after interruptions without losing completed work
 - 📊 **Detailed Logging**: Clear progress and status reports for monitoring and debugging
 
 ## 🚀 Quick Start
@@ -53,10 +53,12 @@ TEMPERATURE=0.3
 
 ### Usage
 
-**Basic usage**:
+**Basic usage (crawl and summarize)**:
 ```bash
 python crawl.py
 ```
+
+Note: use the same command to update the crawled bookmarks incrementally or if crawling was interrupted, already processed bookmarks will just be skipped.
 
 **Limit the number of bookmarks**:
 ```bash
@@ -82,6 +84,14 @@ python crawl.py --from-json
 ```bash
 python run_with_env.py --env ./env.env "python ./crawl.py -p 'C:\Users\Username\AppData\Local\Chromium\User Data\Profile 1' --limit 10"
 ```
+
+Once your bookmarks are crawled, a `bookmarks_with_content.json` file will be present in the current folder. Then you can search through it with a fuzzy search engine, `fuzzy_bookmark_search.py`, with incremental updates:
+
+```bash
+python fuzzy_bookmark_search.py --update-index
+```
+
+This launches a local web server with the search engine accessible through http://localhost:8132/ (the port can be changed via `--port xxx`). The search engine uses Whoosh to build a fast, on-disk, fuzzy searchable index. If you do not wish to incrementally update your index and just exploit your already generated index, just drop the `--update-index` argument.
 
 ## 📋 Detailed Features
 

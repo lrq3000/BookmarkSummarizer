@@ -8,3 +8,6 @@ python-dotenv==1.0.0  # 环境变量管理
 selenium==4.14.0  # 处理动态网页内容
 webdriver-manager==4.0.1  # 自动管理WebDriver
 lxml==4.9.3  # 用于HTML解析
+Whoosh==2.7.4  # 用于模糊搜索索引
+fastapi==0.104.1  # 用于构建API
+uvicorn[standard]==0.24.0  # 用于运行FastAPI服务器

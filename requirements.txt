@@ -11,3 +11,4 @@ lxml==4.9.3 # Used for HTML parsing
 Whoosh==2.7.4 # Used for fuzzy search indexing
 fastapi==0.104.1 # Used to build APIs
 uvicorn[standard]==0.24.0 # Used to run the FastAPI server
+browser-history

@@ -14,49 +14,44 @@
 
 import json
 import os
+import browser_history
 
-# Chrome bookmark file path
-bookmark_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Bookmarks")
 # Path to save to JSON file
 output_path = os.path.expanduser("./bookmarks.json")
 
-def get_bookmarks(bookmark_path):
-    with open(bookmark_path, "r", encoding="utf-8") as file:
-        bookmarks_data = json.load(file)
+def get_bookmarks():
+    """
+    Fetch bookmarks from all installed browsers using browser_history module.
+    Returns a list of bookmark dictionaries compatible with the existing script format.
+    """
+    # Fetch bookmarks from all browsers
+    outputs = browser_history.get_bookmarks()
+    bookmarks_data = outputs.bookmarks
 
-    urls = []
+    bookmarks = []
+    for dt, url, title, folder in bookmarks_data:
+        # Map the tuple (datetime, url, title, folder) to the expected dictionary format
+        bookmark_info = {
+            "date_added": dt.timestamp() if dt else "N/A",  # Convert datetime to timestamp for compatibility
+            "date_last_used": "N/A",  # Not available from browser_history
+            "guid": "N/A",  # Not available from browser_history
+            "id": "N/A",  # Not available from browser_history
+            "name": title,  # Title of the bookmark
+            "type": "url",  # All entries are URLs
+            "url": url,  # URL of the bookmark
+            "folder": folder,  # Folder information for filtering
+        }
+        bookmarks.append(bookmark_info)
 
-    def extract_bookmarks(bookmark_node):
-        """Recursively extract URLs of all bookmarks"""
-        if "children" in bookmark_node:
-            for child in bookmark_node["children"]:
-                extract_bookmarks(child)
-        elif "url" in bookmark_node:
-            bookmark_info = {
-                "date_added": bookmark_node.get("date_added", "N/A"),
-                "date_last_used": bookmark_node.get("date_last_used", "N/A"),
-                "guid": bookmark_node.get("guid", "N/A"),
-                "id": bookmark_node.get("id", "N/A"),
-                "name": bookmark_node.get("name", "N/A"),
-                "type": bookmark_node.get("type", "url"),
-                "url": bookmark_node.get("url", ""),
-            }
-            urls.append(bookmark_info)
+    return bookmarks
 
-    # Traverse the JSON structure
-    for item in bookmarks_data["roots"].values():
-        extract_bookmarks(item)
-
-    return urls
-
-# Parse bookmarks
-bookmarks = get_bookmarks(bookmark_path)
+# Parse bookmarks from all browsers
+bookmarks = get_bookmarks()
 
 # Save to JSON file
-output_path = os.path.expanduser(output_path)
 with open(output_path, "w", encoding="utf-8") as output_file:
-    # Remove data with empty URLs, and extension data
-    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["name"] != "Extensions"] 
+    # Remove data with empty URLs, non-URL types, and 'Extensions' folder
+    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["folder"] != "Extensions"]
     json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
 
 print(f"Extracted {len(bookmarks)} bookmarks in total, saved to {output_path}")

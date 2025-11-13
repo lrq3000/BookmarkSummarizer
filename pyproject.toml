@@ -45,7 +45,8 @@ dependencies = [
     "lxml==4.9.3",
     "Whoosh==2.7.4",
     "fastapi==0.104.1",
-    "uvicorn[standard]==0.24.0"
+    "uvicorn[standard]==0.24.0",
+    "browser-history",
 ]
 
 [project.optional-dependencies]

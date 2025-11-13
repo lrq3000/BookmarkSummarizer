@@ -33,17 +33,12 @@ from selenium.webdriver.support import expected_conditions as EC
 import chardet
 from tqdm import tqdm
 import traceback
+from browser_history.browsers import *
 
 
-# --- Chrome Profile and Bookmark Path Configuration ---
-# Default Chrome Profile directory path (macOS example)
-# NOTE: Default paths vary by OS (Windows/Linux). Users should specify the path
-# via the command-line argument or modify this default for their system.
-DEFAULT_CHROME_PROFILE_DIR = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default")
-DEFAULT_BOOKMARK_FILENAME = "Bookmarks"
-
-# Initial bookmark file path, which will be updated in main() based on command-line arguments
-bookmark_path = os.path.join(DEFAULT_CHROME_PROFILE_DIR, DEFAULT_BOOKMARK_FILENAME)
+# --- Browser Profile Configuration ---
+# Default profile paths are handled by browser_history module
+# Users can specify custom paths via --profile-path argument
 # ----------------------------------------------------
 
 bookmarks_path = os.path.expanduser("./bookmarks.json")
@@ -593,33 +588,73 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None):
     print(f"Summary generation complete! Success: {success_count}/{total_count}")
     return existing_data
 
-# Read the bookmark JSON file
-def get_bookmarks(bookmark_path):
-    with open(bookmark_path, "r", encoding="utf-8") as file:
-        bookmarks_data = json.load(file)
+# Fetch bookmarks using browser_history module
+def get_bookmarks(browser=None, profile_path=None):
+    """
+    Fetches bookmarks from specified browser or all browsers if none specified.
 
+    Parameters:
+        browser (str, optional): Browser name (e.g., 'chrome', 'firefox'). If None, fetches from all browsers.
+        profile_path (str, optional): Path to browser profile directory.
+
+    Returns:
+        list: List of bookmark dictionaries with url, name, date_added, etc.
+    """
     urls = []
 
-    def extract_bookmarks(bookmark_node):
-        """Recursively extracts the URL of all bookmarks"""
-        if "children" in bookmark_node:
-            for child in bookmark_node["children"]:
-                extract_bookmarks(child)
-        elif "url" in bookmark_node:
+    try:
+        if browser:
+            # Map browser name to browser_history class
+            browser_map = {
+                'chrome': Chrome,
+                'firefox': Firefox,
+                'edge': Edge,
+                'opera': Opera,
+                'opera_gx': OperaGX,
+                'safari': Safari,
+                'vivaldi': Vivaldi,
+                'brave': Brave,
+            }
+
+            if browser not in browser_map:
+                raise ValueError(f"Unsupported browser: {browser}")
+
+            browser_class = browser_map[browser]
+
+            # Initialize browser instance
+            if profile_path:
+                browser_instance = browser_class(profile_path)
+            else:
+                browser_instance = browser_class()
+
+            # Fetch bookmarks
+            bookmarks_output = browser_instance.fetch_bookmarks()
+            bookmarks = bookmarks_output.bookmarks
+        else:
+            # Fetch from all browsers
+            from browser_history import get_bookmarks
+            bookmarks_output = get_bookmarks()
+            bookmarks = bookmarks_output.bookmarks
+
+        # Convert to the expected format
+        for bookmark in bookmarks:
+            # browser_history returns tuples of (datetime, url, title, folder)
+            timestamp, url, title, folder = bookmark
             bookmark_info = {
-                "date_added": bookmark_node.get("date_added", "N/A"),
-                "date_last_used": bookmark_node.get("date_last_used", "N/A"),
-                "guid": bookmark_node.get("guid", "N/A"),
-                "id": bookmark_node.get("id", "N/A"),
-                "name": bookmark_node.get("name", "N/A"),
-                "type": bookmark_node.get("type", "url"),
-                "url": bookmark_node.get("url", ""),
+                "date_added": timestamp.isoformat() if timestamp else "N/A",
+                "date_last_used": "N/A",  # browser_history doesn't provide this
+                "guid": "N/A",  # browser_history doesn't provide this
+                "id": "N/A",  # browser_history doesn't provide this
+                "name": title or "N/A",
+                "type": "url",
+                "url": url,
             }
             urls.append(bookmark_info)
 
-    # Traverse the JSON structure
-    for item in bookmarks_data["roots"].values():
-        extract_bookmarks(item)
+    except Exception as e:
+        print(f"Error fetching bookmarks: {e}")
+        # Fallback to empty list or raise error
+        raise
 
     return urls
 
@@ -812,7 +847,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             print(f"{progress_info} Successfully crawled Zhihu content: {title} - {url}, content length: {len(content)} characters")
         else:
             print(f"{progress_info} Failed to crawl Zhihu content: {title} - {url}")
-            return None, {"url": url, "title": title, "reason": "Zhihu content crawl failed", "timestamp": datetime.now().isoformat()}
+            return None, {"url": url, "title": title, "reason": "Zhihu content crawl failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
     else:
         try:
             print(f"{progress_info} Starting crawl: {title} - {url}")
@@ -835,7 +870,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             if 'text/html' not in content_type.lower() and 'text/plain' not in content_type.lower():
                 error_msg = f"Non-text content (Content-Type: {content_type})"
                 print(f"{progress_info} Skipping {error_msg}: {title} - {url}")
-                failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
+                failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
                 return None, failed_info
                 
             soup = BeautifulSoup(response.text, "html.parser")
@@ -859,7 +894,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
         except Exception as e:
             error_msg = f"Request failed: {str(e)}"
             print(f"{progress_info} {error_msg}: {title} - {url}")
-            failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
+            failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             return None, failed_info
     
     # If content is empty after regular crawl or for special sites, try Selenium
@@ -889,7 +924,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     if not content or not content.strip():
         error_msg = "Extracted content is empty"
         print(f"{progress_info} {error_msg}: {title} - {url}")
-        failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": datetime.now().isoformat()}
+        failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         return None, failed_info
             
     # Create a copy of the bookmark including the content
@@ -897,7 +932,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     bookmark_with_content["title"] = title
     bookmark_with_content["content"] = content
     bookmark_with_content["content_length"] = len(content)
-    bookmark_with_content["crawl_time"] = datetime.now().isoformat()
+    bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     bookmark_with_content["crawl_method"] = crawl_method
     
     print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
@@ -919,7 +954,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
     start_time = time.time()
     total_count = len(bookmarks_to_process)
     print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Create a list to store all tasks
     futures = []
@@ -941,7 +976,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
                 failed_records.append(failed_info)
     
     end_time = time.time()
-    print(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Print elapsed time information
     elapsed_time = end_time - start_time
@@ -961,32 +996,36 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
 # Parse command-line arguments
 def parse_args():
     # Create the argument parser with a clear description of the application's purpose.
-    parser = argparse.ArgumentParser(description='Crawl Chrome bookmarks and build a knowledge base')
-    
+    parser = argparse.ArgumentParser(description='Crawl browser bookmarks and build a knowledge base')
+
     # Argument for limiting the number of bookmarks to process.
     parser.add_argument('--limit', type=int, help='Limit the number of bookmarks to process (0 for no limit)')
-    
+
     # Argument for setting the number of concurrent workers for parallel fetching.
     parser.add_argument('--workers', type=int, help='Number of worker threads for parallel fetching')
-    
+
     # Flag to skip the summary generation step, useful for content fetching only.
     parser.add_argument('--no-summary', action='store_true', help='Skip the summary generation step')
-    
+
     # Flag to generate summaries from an existing content file, skipping the crawl.
     parser.add_argument('--from-json', action='store_true', help='Generate summaries from existing bookmarks_with_content.json')
-    
-    # Add optional command-line argument to specify a custom Chrome Profile directory path.
-    # This allows the application to read bookmarks from a different Chrome profile (e.g., 'Profile 1').
-    # Example paths:
-    # Windows: C:\Users\<username>\AppData\Local\Google\Chrome\User Data\Profile 1
-    # Linux: ~/.config/google-chrome/Profile 1
-    # macOS: ~/Library/Application Support/Google/Chrome/Profile 1
+
+    # Add optional command-line argument to specify a custom browser.
+    # This allows the application to read bookmarks from a specific browser.
+    parser.add_argument(
+        '--browser',
+        '-b',
+        type=str,
+        choices=['chrome', 'firefox', 'edge', 'opera', 'opera_gx', 'safari', 'vivaldi', 'brave'],
+        help='Specify the browser to fetch bookmarks from. If not specified, fetches from all browsers.'
+    )
+
+    # Add optional command-line argument to specify a custom profile path.
+    # This allows the application to read bookmarks from a specific profile directory.
     parser.add_argument(
         '--profile-path',
-        '-p',
         type=str,
-        default=DEFAULT_CHROME_PROFILE_DIR,
-        help=f'Specify a custom path to the Chrome Profile directory (e.g., "Default" or "Profile 1"). Default: {DEFAULT_CHROME_PROFILE_DIR}'
+        help='Specify a custom path to the browser profile directory. Used in conjunction with --browser.'
     )
     return parser.parse_args()
 
@@ -994,57 +1033,45 @@ def parse_args():
 def main():
     # Parse command-line arguments
     args = parse_args()
-    
-    # --- Update Global Path Configuration based on Command-Line Argument ---
-    # If the user provided a custom profile path, update the global bookmark file path.
-    global bookmark_path
-    if args.profile_path != DEFAULT_CHROME_PROFILE_DIR:
-        # Use the user-provided path and the default bookmark filename to construct the new path.
-        # os.path.expanduser() handles the ~ symbol for cross-platform compatibility.
-        new_profile_dir = os.path.expanduser(args.profile_path)
-        bookmark_path = os.path.join(new_profile_dir, DEFAULT_BOOKMARK_FILENAME)
-        print(f"Using custom Chrome Profile path: {new_profile_dir}")
-        print(f"Bookmark file path updated to: {bookmark_path}")
-    # --------------------------------------------------------------------
-    
+
     # Read configuration from environment variables, command-line arguments take precedence
     bookmark_limit = args.limit if args.limit is not None else int(os.getenv("BOOKMARK_LIMIT", "0"))  # Default: no limit
     max_workers = args.workers if args.workers is not None else int(os.getenv("MAX_WORKERS", "20"))  # Default: 20 worker threads
     generate_summary_flag = not args.no_summary if args.no_summary is not None else os.getenv("GENERATE_SUMMARY", "true").lower() in ("true", "1", "yes")  # Default: generate summary
-    
+
     # If the --from-json argument is used, read directly from the JSON file and generate summaries
     if args.from_json:
         print("Generating summaries from existing bookmarks_with_content.json...")
         try:
             with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
                 bookmarks_with_content = json.load(f)
-            
+
             if not bookmarks_with_content:
                 print("Error: bookmarks_with_content.json is empty or incorrectly formatted")
                 return
-                
+
             if bookmark_limit > 0:
                 print(f"Processing only the first {bookmark_limit} bookmarks based on limit")
                 bookmarks_with_content = bookmarks_with_content[:bookmark_limit]
-                
+
             # Configure model and generate summaries
             model_config = ModelConfig()
-            
+
             # Test API connection
             if not test_api_connection(model_config):
                 print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
                 return
-                
+
             # Generate summaries for content
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
-            
+
             # Save the updated content
             with open(bookmarks_with_content_path, "w", encoding="utf-8") as output_file:
                 json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
-                
+
             print(f"Summary generation complete, {bookmarks_with_content_path} updated")
             return
-            
+
         except FileNotFoundError:
             print(f"Error: File not found {bookmarks_with_content_path}")
             return
@@ -1054,15 +1081,17 @@ def main():
         except Exception as e:
             print(f"Error processing JSON file: {str(e)}")
             return
-    
+
     # Original crawling logic
     print(f"Configuration:")
+    print(f"  - Browser: {args.browser if args.browser else 'All browsers'}")
+    print(f"  - Profile Path: {args.profile_path if args.profile_path else 'Default'}")
     print(f"  - Bookmark Limit: {bookmark_limit if bookmark_limit > 0 else 'No Limit'}")
     print(f"  - Parallel Workers: {max_workers}")
     print(f"  - Generate Summary: {'Yes' if generate_summary_flag else 'No'}")
-    
+
     # Get bookmark data
-    bookmarks = get_bookmarks(bookmark_path)
+    bookmarks = get_bookmarks(browser=args.browser, profile_path=args.profile_path)
     
     # Filter bookmarks: remove empty URLs, 10.0. network URLs, and non-qualifying types
     filtered_bookmarks = []

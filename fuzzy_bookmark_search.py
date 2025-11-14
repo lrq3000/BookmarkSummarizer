@@ -652,8 +652,8 @@ def main():
     parser = argparse.ArgumentParser(description="Fuzzy Bookmark Search Engine")
     parser.add_argument('--port', type=int, default=8132,
                         help='Port to run the server on (default: 8132)')
-    parser.add_argument('--update-index', action='store_true',
-                        help='Update existing index instead of rebuilding from scratch')
+    parser.add_argument('--no-update', action='store_true',
+                        help='Skip updating the index')
     parser.add_argument('--index-dir', type=str, default='./whoosh_index',
                         help='Directory for the Whoosh index (default: ./whoosh_index)')
     parser.add_argument('--json-path', type=str, default='bookmarks_with_content.json',
@@ -665,14 +665,14 @@ def main():
     # This step is necessary for the search functionality to work.
     print("Checking and indexing bookmarks if necessary...")
     try:
-        # Attempt to open the index; if it doesn't exist or update is requested, create/update it
-        if not index.exists_in(args.index_dir) or args.update_index:
-            if args.update_index and index.exists_in(args.index_dir):
+        # Attempt to open the index; if it doesn't exist or no-update is not requested, create/update it
+        if not index.exists_in(args.index_dir) or not args.no_update:
+            if not args.no_update and index.exists_in(args.index_dir):
                 print("Updating existing index...")
             else:
                 print("Index not found. Loading and indexing bookmarks...")
             bookmarks_gen = load_bookmarks_data(args.json_path)
-            index_bookmarks(bookmarks_gen, args.index_dir, update=args.update_index)
+            index_bookmarks(bookmarks_gen, args.index_dir, update=not args.no_update)
             print("Indexing complete.")
         else:
             print("Index already exists. Skipping indexing.")

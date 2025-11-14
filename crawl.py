@@ -995,7 +995,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_size=50):
     # Determine processing mode based on limit
     if limit:
         print(f"Processing up to {limit} new bookmarks sequentially to accurately enforce limit")
@@ -1103,8 +1103,8 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
             while True:
                 time.sleep(1)  # Check counter every second
                 with bookmarks_lock:
-                    if new_bookmarks_counter >= 50:
-                        # Trigger flush when counter reaches 50
+                    if new_bookmarks_counter >= flush_batch_size:
+                        # Trigger flush when counter reaches the specified batch size
                         flush_to_disk(bookmarks_with_content, failed_records)
                         new_bookmarks_counter = 0
 
@@ -1222,6 +1222,14 @@ def parse_args():
         action='store_true',
         help='Rebuild the entire index from scratch instead of resuming from existing bookmarks_with_content.json'
     )
+
+    # Add --flush-batch-size argument to control the batch size for flushing to disk
+    parser.add_argument(
+        '--flush-batch-size',
+        type=int,
+        default=50,
+        help='Number of new bookmarks to accumulate before triggering a flush to disk to save intermediate results (default: 50)'
+    )
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -1236,6 +1244,7 @@ def main():
     bookmark_limit = args.limit if args.limit is not None else 0  # Default: no limit
     max_workers = args.workers if args.workers is not None else 20  # Default: 20 worker threads
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
+    flush_batch_size = args.flush_batch_size  # Batch size for flushing to disk
 
     # Load existing bookmarks_with_content.json if not rebuilding from scratch
     existing_bookmarks = []
@@ -1352,7 +1361,8 @@ def main():
     bookmarks_with_content, failed_records, skipped_url_count = parallel_fetch_bookmarks(
         filtered_bookmarks,
         max_workers=max_workers,
-        limit=bookmark_limit if bookmark_limit > 0 else None
+        limit=bookmark_limit if bookmark_limit > 0 else None,
+        flush_batch_size=flush_batch_size
     )
     
     # Only execute the following code if summary generation is enabled

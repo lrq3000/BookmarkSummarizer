@@ -223,7 +223,6 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
     pbar.close()
     if update:
         print(f"Indexing update complete: {new_records_count} new records added.")
-        print(f"Total bookmarks in index: {existing_count + new_records_count}")
     else:
         print(f"Initial indexing complete: {processed_count} records indexed.")
 
@@ -674,6 +673,15 @@ def main():
     except Exception as e:
         print(f"Error during indexing: {e}")
         print("Continuing with server startup...")
+
+    # Always print the total number of entries in the index
+    try:
+        ix = index.open_dir(args.index_dir)
+        with ix.searcher() as searcher:
+            total_entries = searcher.doc_count_all()
+        print(f"Total bookmarks in index: {total_entries}")
+    except Exception as e:
+        print(f"Error accessing index for count: {e}")
 
     # Launch the FastAPI server using uvicorn
     # The server will be accessible at the specified port

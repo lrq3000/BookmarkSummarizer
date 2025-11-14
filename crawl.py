@@ -547,20 +547,39 @@ def test_api_connection(config=None):
         return False
 
 # Add summary generation step in the main function
-def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None):
-    """Generates summaries for bookmark content."""
+def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, force_recompute=False):
+    """
+    Generates summaries for bookmark content.
+
+    This function iterates through the provided bookmarks with content and generates AI-powered summaries
+    using the configured language model. By default, it skips bookmarks that already have a non-empty
+    "summary" field to avoid redundant API calls and preserve existing summaries. The force_recompute
+    parameter allows overriding this behavior to regenerate all summaries, which is useful for updating
+    summaries with improved prompts or models.
+
+    Parameters:
+        bookmarks_with_content (list): List of bookmark dictionaries containing content to summarize.
+        model_config (ModelConfig, optional): Configuration for the language model. Defaults to environment settings.
+        force_recompute (bool): If True, recomputes summaries for all bookmarks regardless of existing summaries.
+                                Defaults to False for efficiency.
+
+    Returns:
+        list: Updated list of bookmarks with generated summaries.
+    """
     if model_config is None:
         model_config = ModelConfig()
-    
+
     total_count = len(bookmarks_with_content)
     print('Generating summaries for bookmarks...')
     print(f"Using {model_config.model_type} model {model_config.model_name} to generate content summaries for {total_count} items...")
-    
+    if force_recompute:
+        print("Force recompute mode enabled: regenerating all summaries regardless of existing ones.")
+
     # First, read the existing file content
     try:
         with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
             existing_data = json.load(f)
-            # Create a map from URL to bookmark
+            # Create a map from URL to bookmark for quick lookup of existing summaries
             existing_map = {item.get('url'): item for item in existing_data}
     except (FileNotFoundError, json.JSONDecodeError):
         existing_map = {}
@@ -578,15 +597,19 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None):
         return existing_data  # Return existing data
     
     success_count = 0
+    skipped_count = 0
     for idx, bookmark in enumerate(tqdm(bookmarks_with_content, desc="Summary Generation Progress")):
         url = bookmark["url"]
         title = bookmark["title"]
         print(f"Generating summary [{idx+1}/{total_count}]: {title} - {url}")
-        
-        # Check if already processed
-        if url in existing_map and "summary" in existing_map[url]:
+
+        # Check if already processed and has non-empty summary, unless force recompute is enabled
+        # This optimization prevents redundant API calls and preserves existing summaries
+        existing_summary = existing_map.get(url, {}).get("summary", "").strip()
+        if not force_recompute and existing_summary:
             print(f"[{idx+1}/{total_count}] Skipping existing summary: {title} - {url}")
             success_count += 1
+            skipped_count += 1
             continue
         
         progress_info = f"[{idx+1}/{total_count}]"
@@ -634,6 +657,8 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None):
         time.sleep(0.5)
     
     print(f"Summary generation complete! Success: {success_count}/{total_count}")
+    if not force_recompute:
+        print(f"Skipped {skipped_count} bookmarks with existing summaries.")
     return existing_data
 
 # Fetch bookmarks using browser_history module
@@ -1230,6 +1255,13 @@ def parse_args():
         default=50,
         help='Number of new bookmarks to accumulate before triggering a flush to disk to save intermediate results (default: 50)'
     )
+
+    # Add --force-recompute-summaries argument to force regeneration of all summaries
+    parser.add_argument(
+        '--force-recompute-summaries',
+        action='store_true',
+        help='Force recomputation of summaries for all bookmarks, overriding the default skip behavior for existing summaries'
+    )
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -1295,8 +1327,8 @@ def main():
                 print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
                 return
 
-            # Generate summaries for content
-            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
+            # Generate summaries for content, respecting the force recompute flag
+            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
 
             # Save the updated content using atomic temp file
             temp_file_path = f"{bookmarks_with_content_path}.temp"
@@ -1375,8 +1407,8 @@ def main():
             print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
             print("Skipping summary generation step...")
         else:
-            # Generate summaries for the crawled content
-            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
+            # Generate summaries for the crawled content, respecting the force recompute flag
+            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
     elif not generate_summary_flag:
         print("Skipping summary generation step based on configuration...")
 

@@ -145,6 +145,7 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
     batch_size = 1000  # Process in batches to manage memory
     batch = []
     processed_keys = set()
+    skipped_count = 0
 
     # If updating, load existing keys to avoid duplicates and count existing bookmarks
     existing_count = 0
@@ -180,8 +181,11 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
 
     for bookmark in bookmarks_generator:
         key = bookmark['key']
-        if update and key in processed_keys:
-            continue  # Skip already indexed bookmarks
+        processed_count += 1
+
+        if key in processed_keys:
+            skipped_count += 1
+            continue
 
         # Combine text fields for composite search
         composite_text = f"{bookmark['title']} {bookmark['content']} {bookmark['summary']}"
@@ -197,8 +201,8 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
         }
 
         batch.append(doc)
-        processed_count += 1
         new_records_count += 1
+        processed_keys.add(key)
 
         # Update progress bar
         if update:
@@ -221,10 +225,9 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
 
     # Close progress bar and show final summary
     pbar.close()
-    if update:
-        print(f"Indexing update complete: {new_records_count} new records added.")
-    else:
-        print(f"Initial indexing complete: {processed_count} records indexed.")
+    print(f"Records parsed from JSON file: {processed_count}")
+    print(f"Records skipped as duplicates: {skipped_count}")
+    print(f"Total bookmarks remaining in index: {existing_count + new_records_count}")
 
 def get_total_results(query, searcher):
     """

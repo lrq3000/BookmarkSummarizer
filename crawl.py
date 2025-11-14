@@ -33,6 +33,8 @@ import chardet
 from tqdm import tqdm
 import traceback
 from browser_history.browsers import *
+import hashlib
+import threading
 
 # TOML parsing imports with fallback for older Python versions
 try:
@@ -49,6 +51,11 @@ except ImportError:
 bookmarks_path = os.path.expanduser("./bookmarks.json")
 bookmarks_with_content_path = os.path.expanduser("./bookmarks_with_content.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
+
+# Global sets for deduplication
+url_hashes = set()
+content_hashes = set()
+content_lock = threading.Lock()
 
 # Load TOML configuration
 def load_config(config_path="default_config.toml"):
@@ -968,6 +975,14 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
         failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         return None, failed_info
             
+    # Check for content deduplication
+    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    with content_lock:
+        if content_hash in content_hashes:
+            print(f"{progress_info} Skipping duplicate content: {title} - {url}")
+            return None, None  # Skip saving, but not a failure
+        content_hashes.add(content_hash)
+
     # Create a copy of the bookmark including the content
     bookmark_with_content = bookmark.copy()
     bookmark_with_content["title"] = title
@@ -975,64 +990,126 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     bookmark_with_content["content_length"] = len(content)
     bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     bookmark_with_content["crawl_method"] = crawl_method
-    
+
     print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
 def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
+    # Determine processing mode based on limit
     if limit:
-        print(f"Processing only the first {limit} bookmarks based on configuration limit")
-        bookmarks_to_process = bookmarks[:limit]
-    else:
-        print(f"Processing all {len(bookmarks)} bookmarks")
-        bookmarks_to_process = bookmarks
-    
-    bookmarks_with_content = []
-    failed_records = []
-    
-    # Use ThreadPoolExecutor for parallel crawling of bookmark content
-    start_time = time.time()
-    total_count = len(bookmarks_to_process)
-    print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
-    print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Create a list to store all tasks
-    futures = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        for idx, bookmark in enumerate(bookmarks_to_process):
-            # Print progress before submitting the task
+        print(f"Processing up to {limit} new bookmarks sequentially to accurately enforce limit")
+        # Sequential processing for limited crawls
+        bookmarks_with_content = []
+        failed_records = []
+        new_bookmarks_added = 0
+
+        start_time = time.time()
+        print(f"Starting sequential crawl of bookmark content")
+        print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        for idx, bookmark in enumerate(bookmarks):
+            if new_bookmarks_added >= limit:
+                print(f"Reached limit of {limit} new bookmarks added")
+                break
+
+            url = bookmark['url']
+            url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+            if url_hash in url_hashes:
+                title = bookmark.get("name", "No Title")
+                print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
+                continue  # Skip duplicates without counting towards limit
+            url_hashes.add(url_hash)
+
             title = bookmark.get("name", "No Title")
-            print(f"Submitting task [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
-            future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count)
-            futures.append(future)
-        
-        # Use tqdm to create a progress bar
-        for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
-            result, failed_info = future.result()
+            print(f"Processing bookmark [{idx+1}]: {title} - {url}")
+
+            result, failed_info = fetch_webpage_content(bookmark, idx+1, None)  # No total_count for sequential
             if result:
                 bookmarks_with_content.append(result)
+                new_bookmarks_added += 1
+                print(f"Successfully added bookmark {new_bookmarks_added}/{limit}")
             if failed_info:
                 failed_records.append(failed_info)
-    
-    end_time = time.time()
-    print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Print elapsed time information
-    elapsed_time = end_time - start_time
-    elapsed_minutes = elapsed_time / 60
-    if elapsed_time > 60:
-        print(f"Total time for parallel bookmark crawl: {elapsed_minutes:.2f} minutes ({elapsed_time:.2f} seconds)")
+
+        end_time = time.time()
+        print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Print elapsed time information
+        elapsed_time = end_time - start_time
+        elapsed_minutes = elapsed_time / 60
+        if elapsed_time > 60:
+            print(f"Total time for sequential bookmark crawl: {elapsed_minutes:.2f} minutes ({elapsed_time:.2f} seconds)")
+        else:
+            print(f"Total time for sequential bookmark crawl: {elapsed_time:.2f} seconds")
+
+        # Calculate average processing time per bookmark
+        processed_count = idx + 1
+        if processed_count > 0:
+            avg_time_per_bookmark = elapsed_time / processed_count
+            print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
+
+        return bookmarks_with_content, failed_records, new_bookmarks_added
     else:
-        print(f"Total time for parallel bookmark crawl: {elapsed_time:.2f} seconds")
-    
-    # Calculate average processing time per bookmark
-    if total_count > 0:
-        avg_time_per_bookmark = elapsed_time / total_count
-        print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
-    
-    return bookmarks_with_content, failed_records
+        # Original parallel processing for unlimited crawls
+        print(f"Processing all {len(bookmarks)} bookmarks in parallel")
+        bookmarks_to_process = bookmarks
+
+        bookmarks_with_content = []
+        failed_records = []
+        skipped_url_count = 0
+
+        # Use ThreadPoolExecutor for parallel crawling of bookmark content
+        start_time = time.time()
+        total_count = len(bookmarks_to_process)
+        print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
+        print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Create a list to store all tasks
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            for idx, bookmark in enumerate(bookmarks_to_process):
+                url = bookmark['url']
+                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                if url_hash in url_hashes:
+                    title = bookmark.get("name", "No Title")
+                    print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
+                    skipped_url_count += 1
+                    continue
+                url_hashes.add(url_hash)
+
+                # Print progress before submitting the task
+                title = bookmark.get("name", "No Title")
+                print(f"Submitting task [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
+                future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count)
+                futures.append(future)
+
+            # Use tqdm to create a progress bar
+            for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
+                result, failed_info = future.result()
+                if result:
+                    bookmarks_with_content.append(result)
+                if failed_info:
+                    failed_records.append(failed_info)
+
+        end_time = time.time()
+        print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Print elapsed time information
+        elapsed_time = end_time - start_time
+        elapsed_minutes = elapsed_time / 60
+        if elapsed_time > 60:
+            print(f"Total time for parallel bookmark crawl: {elapsed_minutes:.2f} minutes ({elapsed_time:.2f} seconds)")
+        else:
+            print(f"Total time for parallel bookmark crawl: {elapsed_time:.2f} seconds")
+
+        # Calculate average processing time per bookmark
+        if total_count > 0:
+            avg_time_per_bookmark = elapsed_time / total_count
+            print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
+
+        return bookmarks_with_content, failed_records, len(bookmarks_with_content)
 
 # Parse command-line arguments
 def parse_args():
@@ -1076,6 +1153,13 @@ def parse_args():
         default='default_config.toml',
         help='Path to the TOML configuration file (default: default_config.toml)'
     )
+
+    # Add --rebuild argument to rebuild the entire index from scratch
+    parser.add_argument(
+        '--rebuild',
+        action='store_true',
+        help='Rebuild the entire index from scratch instead of resuming from existing bookmarks_with_content.json'
+    )
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -1090,6 +1174,32 @@ def main():
     bookmark_limit = args.limit if args.limit is not None else 0  # Default: no limit
     max_workers = args.workers if args.workers is not None else 20  # Default: 20 worker threads
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
+
+    # Load existing bookmarks_with_content.json if not rebuilding from scratch
+    existing_bookmarks = []
+    if not args.rebuild:
+        try:
+            with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
+                existing_bookmarks = json.load(f)
+            print(f"Loaded {len(existing_bookmarks)} existing bookmarks from {bookmarks_with_content_path}")
+
+            # Populate global deduplication sets with existing data
+            global url_hashes, content_hashes
+            for bookmark in existing_bookmarks:
+                url = bookmark.get('url')
+                if url:
+                    url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                    url_hashes.add(url_hash)
+                content = bookmark.get('content')
+                if content:
+                    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                    content_hashes.add(content_hash)
+            print(f"Populated deduplication sets: {len(url_hashes)} URLs, {len(content_hashes)} content hashes")
+        except (FileNotFoundError, json.JSONDecodeError):
+            print(f"No existing {bookmarks_with_content_path} found or invalid JSON, starting fresh")
+            existing_bookmarks = []
+    else:
+        print("Rebuilding from scratch (--rebuild flag used)")
 
     # If the --from-json argument is used, read directly from the JSON file and generate summaries
     if args.from_json:
@@ -1117,9 +1227,19 @@ def main():
             # Generate summaries for content
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config)
 
-            # Save the updated content
-            with open(bookmarks_with_content_path, "w", encoding="utf-8") as output_file:
-                json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
+            # Save the updated content using atomic temp file
+            temp_file_path = f"{bookmarks_with_content_path}.temp"
+            try:
+                with open(temp_file_path, "w", encoding="utf-8") as output_file:
+                    json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
+                # Atomic replace
+                os.replace(temp_file_path, bookmarks_with_content_path)
+                print(f"Successfully saved {len(bookmarks_with_content)} bookmarks to {bookmarks_with_content_path}")
+            except Exception as e:
+                print(f"Error saving bookmarks: {str(e)}")
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                raise
 
             print(f"Summary generation complete, {bookmarks_with_content_path} updated")
             return
@@ -1144,16 +1264,22 @@ def main():
 
     # Get bookmark data
     bookmarks = get_bookmarks(browser=args.browser, profile_path=args.profile_path)
-    
+
     # Filter bookmarks: remove empty URLs, 10.0. network URLs, and non-qualifying types
     filtered_bookmarks = []
     for bookmark in bookmarks:
         url = bookmark["url"]
         # Check for empty URL, URL type, not "Extension" name, and not 10.0. network URL
-        if (url and 
-            bookmark["type"] == "url" and 
+        if (url and
+            bookmark["type"] == "url" and
             bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
             not re.match(r"https?://10\.0\.", url)):
+            # If not rebuilding, skip URLs already in existing bookmarks
+            if not args.rebuild:
+                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                if url_hash in url_hashes:
+                    print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
+                    continue
             filtered_bookmarks.append(bookmark)
     
     # Save filtered bookmark data
@@ -1161,9 +1287,9 @@ def main():
         json.dump(filtered_bookmarks, output_file, ensure_ascii=False, indent=4)
     
     # Parallel crawl bookmark content
-    bookmarks_with_content, failed_records = parallel_fetch_bookmarks(
-        filtered_bookmarks, 
-        max_workers=max_workers, 
+    bookmarks_with_content, failed_records, skipped_url_count = parallel_fetch_bookmarks(
+        filtered_bookmarks,
+        max_workers=max_workers,
         limit=bookmark_limit if bookmark_limit > 0 else None
     )
     
@@ -1182,9 +1308,24 @@ def main():
     elif not generate_summary_flag:
         print("Skipping summary generation step based on configuration...")
 
-    # Save bookmark data with content
-    with open(bookmarks_with_content_path, "w", encoding="utf-8") as output_file:
-        json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
+    # Merge new crawled results with existing data if not rebuilding
+    if not args.rebuild:
+        bookmarks_with_content = existing_bookmarks + bookmarks_with_content
+        print(f"Merged {len(existing_bookmarks)} existing bookmarks with {len(bookmarks_with_content) - len(existing_bookmarks)} new bookmarks")
+
+    # Save bookmark data with content using atomic temp file
+    temp_file_path = f"{bookmarks_with_content_path}.temp"
+    try:
+        with open(temp_file_path, "w", encoding="utf-8") as output_file:
+            json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
+        # Atomic replace
+        os.replace(temp_file_path, bookmarks_with_content_path)
+        print(f"Successfully saved {len(bookmarks_with_content)} bookmarks to {bookmarks_with_content_path}")
+    except Exception as e:
+        print(f"Error saving bookmarks: {str(e)}")
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        raise
     
     # Save failed URLs and reasons
     with open(failed_urls_path, "w", encoding="utf-8") as f:
@@ -1192,6 +1333,7 @@ def main():
     
     print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
     print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {bookmarks_with_content_path}")
+    print(f"Skipped {skipped_url_count} duplicate URLs during crawling")
     print(f"Failed to crawl {len(failed_records)} URLs, details saved to {failed_urls_path}")
     
     # Print list of failed URLs and titles for easy viewing

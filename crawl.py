@@ -1059,6 +1059,60 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
         failed_records = []
         skipped_url_count = 0
 
+        # Batch flushing variables for thread-safety
+        flush_lock = threading.Lock()
+        bookmarks_lock = threading.Lock()
+        new_bookmarks_counter = 0
+        flush_in_progress = False
+        flush_flag_lock = threading.Lock()
+
+        def flush_to_disk(current_bookmarks, current_failed):
+            nonlocal flush_in_progress
+            with flush_flag_lock:
+                if flush_in_progress:
+                    return  # Prevent overlapping flushes
+                flush_in_progress = True
+            try:
+                # Read existing bookmarks_with_content.json
+                try:
+                    with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
+                        existing_bookmarks = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    existing_bookmarks = []
+
+                # Merge current bookmarks with existing
+                merged_bookmarks = existing_bookmarks + current_bookmarks
+
+                # Save atomically using temp file
+                temp_file_path = bookmarks_with_content_path + '.temp'
+                with open(temp_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(merged_bookmarks, f, ensure_ascii=False, indent=4)
+                os.replace(temp_file_path, bookmarks_with_content_path)
+
+                # Clear the current lists after successful flush
+                current_bookmarks.clear()
+                current_failed.clear()
+            except Exception as e:
+                print(f"Error during periodic flush: {e}")
+            finally:
+                with flush_flag_lock:
+                    flush_in_progress = False
+
+        def monitor_thread():
+            nonlocal new_bookmarks_counter, bookmarks_with_content, failed_records
+            while True:
+                time.sleep(1)  # Check counter every second
+                with bookmarks_lock:
+                    if new_bookmarks_counter >= 50:
+                        # Trigger flush when counter reaches 50
+                        flush_to_disk(bookmarks_with_content, failed_records)
+                        new_bookmarks_counter = 0
+
+        # Start daemon thread to monitor counter and trigger flushes
+        # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.
+        monitor = threading.Thread(target=monitor_thread, daemon=True)
+        monitor.start()
+
         # Use ThreadPoolExecutor for parallel crawling of bookmark content
         start_time = time.time()
         total_count = len(bookmarks_to_process)
@@ -1088,10 +1142,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
             # Use tqdm to create a progress bar
             for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
                 result, failed_info = future.result()
-                if result:
-                    bookmarks_with_content.append(result)
-                if failed_info:
-                    failed_records.append(failed_info)
+                with bookmarks_lock:
+                    if result:
+                        bookmarks_with_content.append(result)
+                        new_bookmarks_counter += 1
+                    if failed_info:
+                        failed_records.append(failed_info)
 
         end_time = time.time()
         print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1108,6 +1164,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None):
         if total_count > 0:
             avg_time_per_bookmark = elapsed_time / total_count
             print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
+
+        # Force final flush after all processing is complete
+        with bookmarks_lock:
+            if bookmarks_with_content or failed_records:
+                flush_to_disk(bookmarks_with_content, failed_records)
+                new_bookmarks_counter = 0
 
         return bookmarks_with_content, failed_records, len(bookmarks_with_content)
 

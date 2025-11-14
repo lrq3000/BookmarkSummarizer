@@ -97,9 +97,12 @@ def load_bookmarks_data(json_path='bookmarks_with_content.json'):
 
     for bookmark in data:
         # Preprocess: generate key, normalize text
-        key = bookmark.get('guid') or bookmark.get('id') or bookmark.get('url', '')
-        title = (bookmark.get('title') or bookmark.get('name', '')).strip()
+        guid = bookmark.get('guid', '')
+        id_val = bookmark.get('id', '')
         url = bookmark.get('url', '').strip()
+        # Treat 'N/A' as missing value for key generation
+        key = (guid if guid != 'N/A' else '') or (id_val if id_val != 'N/A' else '') or url
+        title = (bookmark.get('title') or bookmark.get('name', '')).strip()
         content = (bookmark.get('content', '')).strip()
         summary = (bookmark.get('summary', '')).strip()
 

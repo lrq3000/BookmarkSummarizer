@@ -64,7 +64,6 @@ import transaction
 # ----------------------------------------------------
 
 bookmarks_path = os.path.expanduser("./bookmarks.json")
-bookmarks_with_content_path = os.path.expanduser("./bookmarks_with_content.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
 
 # ZODB database and persistent structures for on-disk indexing
@@ -1390,7 +1389,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             if flush_recursion_depth > max_flush_recursion_depth:
                 print(f"Maximum flush recursion depth ({max_flush_recursion_depth}) exceeded. Aborting flush to prevent infinite recursion.")
                 flush_recursion_depth -= 1
-                raise RecursionError("Maximum flush recursion depth exceeded")
+                return  # Return gracefully instead of raising exception
 
             try:
                 # Process bookmarks in smaller batches to prevent recursion issues
@@ -1401,6 +1400,8 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 for i in range(0, len(current_bookmarks), max_batch_size):
                     batch = current_bookmarks[i:i + max_batch_size]
                     for bookmark in batch:
+                        if bookmark is None:
+                            continue
                         url = bookmark.get('url')
                         if url:
                             # Check if bookmark already exists (iterative search)
@@ -1613,6 +1614,8 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 for i in range(0, len(current_bookmarks), max_batch_size):
                     batch = current_bookmarks[i:i + max_batch_size]
                     for bookmark in batch:
+                        if bookmark is None:
+                            continue
                         url = bookmark.get('url')
                         if url:
                             # Check if bookmark already exists (iterative search)
@@ -1869,6 +1872,9 @@ def parse_args():
 
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
+    # Declare global variables used in this function
+    global use_fallback
+
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -2109,7 +2115,7 @@ def main():
             logger.error(f"Error saving fallback failed URLs: {fallback_e}")
     
     print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
-    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {bookmarks_with_content_path}")
+    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {zodb_storage_path}")
     print(f"Skipped {skipped_url_count} duplicate URLs during crawling")
     print(f"Failed to crawl {len(failed_records)} URLs, details saved to {failed_urls_path}")
     

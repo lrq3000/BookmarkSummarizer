@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-import json
 import zipfile
 import argparse
 import time
@@ -26,6 +25,171 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from tqdm import tqdm
+
+# ZODB imports for persistent storage
+import ZODB
+from ZODB.FileStorage import FileStorage
+from ZODB.DB import DB
+import BTrees.OOBTree as OOBTree
+import BTrees.IOBTree as IOBTree
+import persistent
+import transaction
+
+# ZODB database and persistent structures for on-disk indexing
+# ZODB provides persistent object storage with BTrees for efficient O(1) lookups
+# This replaces in-memory sets with disk-based storage for scalability
+zodb_storage_path = os.path.expanduser("./bookmark_index.fs")
+zodb_db = None
+zodb_connection = None
+bookmarks_tree = None  # BTrees.IOBTree for storing bookmarks with integer keys
+
+# In-memory fallback structures for graceful degradation
+fallback_bookmarks = []
+use_fallback = False
+
+# Check disk space before ZODB operations
+def check_disk_space(min_space_mb=100):
+    """
+    Check if there's sufficient disk space for ZODB operations.
+
+    Parameters:
+        min_space_mb (int): Minimum required disk space in MB
+
+    Returns:
+        bool: True if sufficient space, False otherwise
+    """
+    try:
+        # Get the directory containing the storage file
+        storage_dir = os.path.dirname(os.path.abspath(zodb_storage_path))
+        if not os.path.exists(storage_dir):
+            # If directory doesn't exist, try to create it
+            try:
+                os.makedirs(storage_dir, exist_ok=True)
+            except Exception as e:
+                print(f"Cannot create storage directory {storage_dir}: {e}")
+                return False
+        import shutil
+        stat = shutil.disk_usage(storage_dir)
+        free_space_mb = stat.free / (1024 * 1024)
+        if free_space_mb < min_space_mb:
+            print(f"Insufficient disk space: {free_space_mb:.2f} MB free, {min_space_mb} MB required")
+            return False
+        return True
+    except Exception as e:
+        print(f"Error checking disk space: {e}")
+        return False
+
+# Initialize ZODB database and persistent structures for on-disk indexing
+# ZODB uses BTrees for efficient indexing and provides transactional persistence
+def init_zodb():
+    """
+    Initialize ZODB database with persistent BTrees for deduplication and storage.
+
+    This function sets up the ZODB FileStorage and creates persistent BTree structures:
+    - bookmarks_tree: IOBTree for storing bookmarks with integer keys
+
+    All operations are transactional for data integrity.
+    Includes comprehensive error handling with fallback to in-memory structures.
+    """
+    global zodb_db, zodb_connection, bookmarks_tree, use_fallback
+
+    # Check disk space first
+    if not check_disk_space():
+        print("Insufficient disk space for ZODB initialization. Falling back to in-memory structures.")
+        use_fallback = True
+        return
+
+    try:
+        # Create FileStorage for persistent storage
+        storage = FileStorage(zodb_storage_path)
+        zodb_db = DB(storage)
+        zodb_connection = zodb_db.open()
+
+        # Get or create root object
+        root = zodb_connection.root()
+
+        # Initialize persistent BTrees if they don't exist
+        if 'bookmarks' not in root:
+            root['bookmarks'] = IOBTree.IOBTree()
+        bookmarks_tree = root['bookmarks']
+
+        # Commit initial setup
+        transaction.commit()
+
+        print(f"Initialized ZODB database at {zodb_storage_path}")
+
+    except Exception as e:
+        print(f"Error initializing ZODB: {e}")
+        use_fallback = True
+
+        # Cleanup on failure
+        try:
+            if zodb_connection:
+                zodb_connection.close()
+            if zodb_db:
+                zodb_db.close()
+        except Exception as cleanup_e:
+            print(f"Error during ZODB cleanup: {cleanup_e}")
+
+        print("Falling back to in-memory structures for data integrity")
+
+# Safe ZODB operations with error handling
+def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB operation"):
+    """
+    Perform a ZODB operation with error handling and fallback support.
+
+    Parameters:
+        operation_func (callable): Function performing the ZODB operation
+        fallback_func (callable, optional): Fallback function if ZODB fails
+        operation_name (str): Name of the operation for logging
+
+    Returns:
+        Any: Result of the operation or fallback
+    """
+    global use_fallback
+
+    if use_fallback:
+        if fallback_func:
+            try:
+                return fallback_func()
+            except Exception as e:
+                print(f"Fallback {operation_name} failed: {e}")
+                return None
+        return None
+
+    try:
+        return operation_func()
+    except Exception as e:
+        print(f"{operation_name} failed: {e}")
+        use_fallback = True
+        if fallback_func:
+            try:
+                print(f"Attempting fallback for {operation_name}")
+                return fallback_func()
+            except Exception as fallback_e:
+                print(f"Fallback {operation_name} failed: {fallback_e}")
+        return None
+
+# Cleanup ZODB resources
+def cleanup_zodb():
+    """
+    Properly close ZODB connection and database to ensure data integrity.
+    """
+    global zodb_connection, zodb_db
+    try:
+        if zodb_connection:
+            # Try to commit any pending changes
+            transaction.commit()
+            zodb_connection.close()
+        if zodb_db:
+            zodb_db.close()
+        print("ZODB cleanup completed")
+    except Exception as e:
+        print(f"Error during ZODB cleanup: {e}")
+        try:
+            transaction.abort()  # Ensure transaction is aborted on error
+        except:
+            pass
 
 
 def create_schema():
@@ -77,39 +241,40 @@ def get_or_create_index(index_dir='./whoosh_index', schema=None):
         return index.create_in(index_dir, schema)
 
 
-def load_bookmarks_data(json_path='bookmarks_with_content.json'):
+def load_bookmarks_data(zodb_path='bookmark_index.fs'):
     """
-    Load bookmark data from JSON file, handling zipped files if necessary.
+    Load bookmark data from a ZODB database (.fs file).
 
-    This function first checks if the JSON file exists directly. If not, it looks for a zipped version
-    (bookmarks_with_content.zip) and extracts it. It then loads the JSON data as a generator to handle
-    large files without loading everything into memory at once. Each bookmark is yielded as a dict,
+    This function loads bookmark data from the ZODB bookmarks_tree, handling cases where
+    the database doesn't exist or is corrupted. It yields each bookmark as a dict,
     with preprocessing to generate a unique key and normalize text fields.
 
     Args:
-        json_path (str): Path to the JSON file or zip file.
+        zodb_path (str): Path to the ZODB database file.
 
     Yields:
         dict: Preprocessed bookmark dictionary with fields like title, url, content, summary, key.
     """
-    # Check if JSON exists, otherwise extract from zip
-    if not os.path.exists(json_path):
-        zip_path = json_path.replace('.json', '.zip')
-        if os.path.exists(zip_path):
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall('.')
-        else:
-            raise FileNotFoundError(f"Neither {json_path} nor {zip_path} found.")
+    global bookmarks_tree, use_fallback
 
-    # Load JSON as generator for memory efficiency
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)  # Load entire JSON; for very large files, consider streaming
+    # Try to load from ZODB first
+    bookmarks_list = safe_zodb_operation(
+        lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+        lambda: fallback_bookmarks.copy(),
+        "loading bookmarks from ZODB"
+    )
+
+    if bookmarks_list is None:
+        bookmarks_list = []
 
     # Perform preliminary pass to count total records for progress tracking
-    # This allows tqdm to display accurate progress bars with total counts
-    total_records = len(data)
+    total_records = len(bookmarks_list)
 
-    for bookmark in data:
+    if total_records == 0:
+        print("Warning: No bookmarks found in ZODB database. Make sure to run crawl.py first to populate the database.")
+        return
+
+    for bookmark in bookmarks_list:
         # Preprocess: generate key, normalize text
         guid = bookmark.get('guid', '')
         id_val = bookmark.get('id', '')
@@ -242,7 +407,7 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
 
     # Close progress bar and show final summary
     pbar.close()
-    print(f"Records parsed from JSON file: {processed_count}")
+    print(f"Records parsed from the ZODB database: {processed_count}")
     print(f"Records skipped as duplicates: {skipped_count}")
     print(f"Total bookmarks remaining in index: {existing_count + new_records_count}")
 
@@ -703,15 +868,19 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Fuzzy Bookmark Search Engine")
     parser.add_argument('--port', type=int, default=8132,
-                        help='Port to run the server on (default: 8132)')
+                         help='Port to run the server on (default: 8132)')
     parser.add_argument('--no-update', action='store_true',
-                        help='Skip updating the index')
+                         help='Skip updating the index')
     parser.add_argument('--index-dir', type=str, default='./whoosh_index',
-                        help='Directory for the Whoosh index (default: ./whoosh_index)')
-    parser.add_argument('--json-path', type=str, default='bookmarks_with_content.json',
-                        help='Path to the bookmarks JSON file (default: bookmarks_with_content.json)')
+                         help='Directory for the Whoosh index (default: ./whoosh_index)')
+    parser.add_argument('--zodb-path', type=str, default='bookmark_index.fs',
+                         help='Path to the ZODB database file (default: bookmark_index.fs)')
 
     args = parser.parse_args()
+
+    # Initialize ZODB database
+    print("Initializing ZODB database...")
+    init_zodb()
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.
@@ -722,8 +891,8 @@ def main():
             if not args.no_update and index.exists_in(args.index_dir):
                 print("Updating existing index...")
             else:
-                print("Index not found. Loading and indexing bookmarks...")
-            bookmarks_gen = load_bookmarks_data(args.json_path)
+                print("Index not found. Loading and indexing bookmarks from ZODB...")
+            bookmarks_gen = load_bookmarks_data(args.zodb_path)
             index_bookmarks(bookmarks_gen, args.index_dir, update=not args.no_update)
             print("Indexing complete.")
         else:
@@ -740,6 +909,9 @@ def main():
         print(f"Total bookmarks in index: {total_entries}")
     except Exception as e:
         print(f"Error accessing index for count: {e}")
+
+    # Cleanup ZODB resources before starting server
+    cleanup_zodb()
 
     # Launch the FastAPI server using uvicorn
     # The server will be accessible at the specified port

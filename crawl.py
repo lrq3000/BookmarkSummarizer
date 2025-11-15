@@ -1020,7 +1020,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_size=50):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60):
     # Determine processing mode based on limit
     if limit:
         print(f"Processing up to {limit} new bookmarks sequentially to accurately enforce limit")
@@ -1028,6 +1028,32 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
         bookmarks_with_content = []
         failed_records = []
         new_bookmarks_added = 0
+
+        # Initialize flush tracking
+        last_flush_time = time.time()
+
+        def flush_to_disk_sequential(current_bookmarks, current_failed):
+            """Flush current bookmarks and failed records to disk for sequential processing"""
+            try:
+                # Read existing bookmarks_with_content.json
+                try:
+                    with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
+                        existing_bookmarks = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    existing_bookmarks = []
+
+                # Merge current bookmarks with existing
+                merged_bookmarks = existing_bookmarks + current_bookmarks
+
+                # Save atomically using temp file
+                temp_file_path = bookmarks_with_content_path + '.temp'
+                with open(temp_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(merged_bookmarks, f, ensure_ascii=False, indent=4)
+                os.replace(temp_file_path, bookmarks_with_content_path)
+
+                # Note: Do not clear lists in sequential mode to maintain return values
+            except Exception as e:
+                print(f"Error during sequential periodic flush: {e}")
 
         start_time = time.time()
         print(f"Starting sequential crawl of bookmark content")
@@ -1054,6 +1080,15 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
                 bookmarks_with_content.append(result)
                 new_bookmarks_added += 1
                 print(f"Successfully added bookmark {new_bookmarks_added}/{limit}")
+
+                # Check for periodic flush
+                current_time = time.time()
+                if current_time - last_flush_time >= flush_interval:
+                    print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
+                    flush_to_disk_sequential(bookmarks_with_content, failed_records)
+                    print("Intermediate flush complete.")
+                    last_flush_time = current_time
+
             if failed_info:
                 failed_records.append(failed_info)
 
@@ -1074,6 +1109,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
             avg_time_per_bookmark = elapsed_time / processed_count
             print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
 
+        # Force final flush after all processing is complete
+        if bookmarks_with_content or failed_records:
+            print("Performing final flush to disk...")
+            flush_to_disk_sequential(bookmarks_with_content, failed_records)
+            print("Final flush complete.")
+
         return bookmarks_with_content, failed_records, new_bookmarks_added
     else:
         # Original parallel processing for unlimited crawls
@@ -1087,7 +1128,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
         # Batch flushing variables for thread-safety
         flush_lock = threading.Lock()
         bookmarks_lock = threading.Lock()
-        new_bookmarks_counter = 0
+        last_flush_time = time.time()
         flush_in_progress = False
         flush_flag_lock = threading.Lock()
 
@@ -1124,14 +1165,17 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
                     flush_in_progress = False
 
         def monitor_thread():
-            nonlocal new_bookmarks_counter, bookmarks_with_content, failed_records
+            nonlocal last_flush_time, bookmarks_with_content, failed_records
             while True:
-                time.sleep(1)  # Check counter every second
+                time.sleep(1)  # Check every second
+                current_time = time.time()
                 with bookmarks_lock:
-                    if new_bookmarks_counter >= flush_batch_size:
-                        # Trigger flush when counter reaches the specified batch size
+                    if current_time - last_flush_time >= flush_interval:
+                        # Trigger flush when interval has passed
+                        print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
                         flush_to_disk(bookmarks_with_content, failed_records)
-                        new_bookmarks_counter = 0
+                        print("Intermediate flush complete.")
+                        last_flush_time = current_time
 
         # Start daemon thread to monitor counter and trigger flushes
         # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.
@@ -1170,7 +1214,6 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
                 with bookmarks_lock:
                     if result:
                         bookmarks_with_content.append(result)
-                        new_bookmarks_counter += 1
                     if failed_info:
                         failed_records.append(failed_info)
 
@@ -1193,8 +1236,9 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_batch_
         # Force final flush after all processing is complete
         with bookmarks_lock:
             if bookmarks_with_content or failed_records:
+                print("Performing final flush to disk...")
                 flush_to_disk(bookmarks_with_content, failed_records)
-                new_bookmarks_counter = 0
+                print("Final flush complete.")
 
         return bookmarks_with_content, failed_records, len(bookmarks_with_content)
 
@@ -1248,12 +1292,12 @@ def parse_args():
         help='Rebuild the entire index from scratch instead of resuming from existing bookmarks_with_content.json'
     )
 
-    # Add --flush-batch-size argument to control the batch size for flushing to disk
+    # Add --flush-interval argument to control the interval for flushing to disk
     parser.add_argument(
-        '--flush-batch-size',
+        '--flush-interval',
         type=int,
-        default=50,
-        help='Number of new bookmarks to accumulate before triggering a flush to disk to save intermediate results (default: 50)'
+        default=60,
+        help='Interval in seconds for flushing to disk to save intermediate results (default: 60)'
     )
 
     # Add --force-recompute-summaries argument to force regeneration of all summaries
@@ -1276,7 +1320,7 @@ def main():
     bookmark_limit = args.limit if args.limit is not None else 0  # Default: no limit
     max_workers = args.workers if args.workers is not None else 20  # Default: 20 worker threads
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
-    flush_batch_size = args.flush_batch_size  # Batch size for flushing to disk
+    flush_interval = args.flush_interval  # Interval for flushing to disk
 
     # Load existing bookmarks_with_content.json if not rebuilding from scratch
     existing_bookmarks = []
@@ -1394,14 +1438,14 @@ def main():
         filtered_bookmarks,
         max_workers=max_workers,
         limit=bookmark_limit if bookmark_limit > 0 else None,
-        flush_batch_size=flush_batch_size
+        flush_interval=flush_interval
     )
     
     # Only execute the following code if summary generation is enabled
     if generate_summary_flag and bookmarks_with_content:
         # Configure model
         model_config = ModelConfig(config_data)
-        
+
         # Test API connection
         if not test_api_connection(model_config):
             print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)

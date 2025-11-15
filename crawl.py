@@ -35,6 +35,8 @@ import traceback
 from browser_history.browsers import *
 import hashlib
 import threading
+import importlib.util
+import sys
 
 # TOML parsing imports with fallback for older Python versions
 try:
@@ -56,6 +58,52 @@ failed_urls_path = os.path.expanduser("./failed_urls.json")
 url_hashes = set()
 content_hashes = set()
 content_lock = threading.Lock()
+
+# Custom parsers list - dynamically loaded from custom_parsers/ directory
+custom_parsers = []
+
+# Load custom parsers from custom_parsers/ directory
+def load_custom_parsers():
+    """
+    Dynamically discover and load custom parsers from the custom_parsers/ directory.
+    Each parser should be a Python module with a 'main(bookmark: dict) -> dict' function.
+
+    Returns:
+        list: List of callable parser functions.
+    """
+    parsers = []
+    parsers_dir = os.path.join(os.path.dirname(__file__), 'custom_parsers')
+
+    if not os.path.exists(parsers_dir):
+        print("custom_parsers/ directory not found, skipping custom parsers")
+        return parsers
+
+    # Iterate through all .py files in custom_parsers/
+    for filename in os.listdir(parsers_dir):
+        if filename.endswith('.py') and not filename.startswith('__'):
+            module_path = os.path.join(parsers_dir, filename)
+            module_name = filename[:-3]  # Remove .py extension
+
+            try:
+                # Load the module dynamically
+                spec = importlib.util.spec_from_file_location(module_name, module_path)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+
+                    # Check if the module has a 'main' function
+                    if hasattr(module, 'main') and callable(module.main):
+                        parsers.append(module.main)
+                        print(f"Loaded custom parser: {module_name}")
+                    else:
+                        print(f"Warning: {module_name} does not have a callable 'main' function, skipping")
+                else:
+                    print(f"Warning: Could not load module {module_name}")
+            except Exception as e:
+                print(f"Error loading custom parser {module_name}: {e}")
+
+    print(f"Loaded {len(parsers)} custom parsers")
+    return parsers
 
 # Load TOML configuration
 def load_config(config_path="default_config.toml"):
@@ -898,13 +946,40 @@ def fix_encoding(text):
     
     return text
 
+# Apply custom parsers to bookmark before fetching content
+def apply_custom_parsers(bookmark, parsers):
+    """
+    Apply all custom parsers in sequence to the bookmark.
+
+    Parameters:
+        bookmark (dict): The bookmark dictionary to process
+        parsers (list): List of parser functions to apply
+
+    Returns:
+        dict: The updated bookmark after applying all parsers
+    """
+    updated_bookmark = bookmark.copy()
+    for parser in parsers:
+        try:
+            result = parser(updated_bookmark)
+            if result and isinstance(result, dict):
+                updated_bookmark = result
+        except Exception as e:
+            print(f"Custom parser {parser.__module__ if hasattr(parser, '__module__') else 'unknown'} failed: {e}")
+            # Continue with next parser, don't fail the entire process
+    return updated_bookmark
+
 # Crawl webpage content
 def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     """Crawls webpage content"""
+    # Apply custom parsers before fetching content
+    global custom_parsers
+    bookmark = apply_custom_parsers(bookmark, custom_parsers)
+
     url = bookmark["url"]
     title = bookmark.get("name", "No Title")  # Get title from bookmark
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
-    
+
     # Initialize variables to prevent unassigned error
     content = None
     crawl_method = None
@@ -1020,7 +1095,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False):
     # Determine processing mode based on limit
     if limit:
         print(f"Processing up to {limit} new bookmarks sequentially to accurately enforce limit")
@@ -1090,6 +1165,22 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     last_flush_time = current_time
 
             if failed_info:
+                if not skip_unreachable:
+                    # Save unreachable bookmark with error field
+                    error_bookmark = bookmark.copy()
+                    error_bookmark["error"] = failed_info["reason"]
+                    error_bookmark["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    bookmarks_with_content.append(error_bookmark)
+                    new_bookmarks_added += 1
+                    print(f"Saved unreachable bookmark {new_bookmarks_added}/{limit} with error: {failed_info['reason']}")
+
+                    # Check for periodic flush
+                    current_time = time.time()
+                    if current_time - last_flush_time >= flush_interval:
+                        print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
+                        flush_to_disk_sequential(bookmarks_with_content, failed_records)
+                        print("Intermediate flush complete.")
+                        last_flush_time = current_time
                 failed_records.append(failed_info)
 
         end_time = time.time()
@@ -1104,7 +1195,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             print(f"Total time for sequential bookmark crawl: {elapsed_time:.2f} seconds")
 
         # Calculate average processing time per bookmark
-        processed_count = idx + 1
+        processed_count = idx + 1 if 'idx' in locals() else 0
         if processed_count > 0:
             avg_time_per_bookmark = elapsed_time / processed_count
             print(f"Average processing time per bookmark: {avg_time_per_bookmark:.2f} seconds")
@@ -1215,6 +1306,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     if result:
                         bookmarks_with_content.append(result)
                     if failed_info:
+                        if not skip_unreachable:
+                            # Save unreachable bookmark with error field
+                            error_bookmark = bookmark.copy()
+                            error_bookmark["error"] = failed_info["reason"]
+                            error_bookmark["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                            bookmarks_with_content.append(error_bookmark)
                         failed_records.append(failed_info)
 
         end_time = time.time()
@@ -1306,12 +1403,23 @@ def parse_args():
         action='store_true',
         help='Force recomputation of summaries for all bookmarks, overriding the default skip behavior for existing summaries'
     )
+
+    # Add --skip-unreachable argument to control saving of unreachable bookmarks
+    parser.add_argument(
+        '--skip-unreachable',
+        action='store_true',
+        help='Skip saving unreachable bookmarks. When not provided, unreachable bookmarks are saved with an "error" field containing the error message.'
+    )
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
     # Parse command-line arguments
     args = parse_args()
+
+    # Load custom parsers at startup
+    global custom_parsers
+    custom_parsers = load_custom_parsers()
 
     # Load TOML configuration
     config_data = load_config(args.config)
@@ -1438,7 +1546,8 @@ def main():
         filtered_bookmarks,
         max_workers=max_workers,
         limit=bookmark_limit if bookmark_limit > 0 else None,
-        flush_interval=flush_interval
+        flush_interval=flush_interval,
+        skip_unreachable=args.skip_unreachable
     )
     
     # Only execute the following code if summary generation is enabled

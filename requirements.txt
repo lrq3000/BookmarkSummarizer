@@ -1,15 +1,16 @@
-requests==2.31.0
-beautifulsoup4==4.12.2
-chardet==5.2.0
-urllib3==2.0.7
-openai==1.3.0 # Used to call large model APIs
-tqdm==4.66.1 # Progress bar display
-python-dotenv==1.0.0 # Environment variable management
-selenium==4.14.0 # Process dynamic web page content
-webdriver-manager==4.0.1 # Automatically manage WebDriver
-lxml==4.9.3 # Used for HTML parsing
-Whoosh==2.7.4 # Used for fuzzy search indexing
-fastapi==0.104.1 # Used to build APIs
-uvicorn[standard]==0.24.0 # Used to run the FastAPI server
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+chardet>=5.2.0
+urllib3>=2.0.7
+openai>=1.3.0 # Used to call large model APIs
+tqdm>=4.66.1 # Progress bar display
+python-dotenv>=1.0.0 # Environment variable management
+selenium>=4.14.0 # Process dynamic web page content
+webdriver-manager>=4.0.1 # Automatically manage WebDriver
+lxml>=4.9.3 # Used for HTML parsing
+Whoosh>=2.7.4 # Used for fuzzy search indexing
+fastapi>=0.104.1 # Used to build APIs
+uvicorn[standard]>=0.24.0 # Used to run the FastAPI server
 browser-history
 tomli; python_version < "3.11"  # TOML parser for older Python versions
+youtube-transcript-api>=0.6.2  # For fetching YouTube transcripts

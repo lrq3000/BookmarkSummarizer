@@ -339,7 +339,10 @@ def search_bookmarks(query_str, index_dir='./whoosh_index', limit=10, page=1, pa
                 'url': hit['url'],
                 'score': hit.score,
                 'snippet': snippet,
-                'key': hit['key']
+                'key': hit['key'],
+                'summary': hit['summary'],
+                'content': hit['content'],
+                'full_record': {field: hit[field] for field in hit.fields()}
             })
 
         # Calculate search execution time
@@ -416,6 +419,12 @@ HTML_UI = """
         .page-numbers { display: flex; gap: 5px; }
         .page-numbers button { min-width: 35px; }
         .page-numbers button.active { background-color: #0056b3; }
+        .result-buttons { margin-top: 10px; }
+        .result-buttons button { margin-right: 10px; padding: 5px 10px; font-size: 14px; }
+        .collapsible-section { margin-top: 10px; padding: 10px; background-color: #f9f9f9; border-left: 3px solid #007bff; }
+        .collapsible-section h4 { margin: 0 0 10px 0; color: #007bff; }
+        .collapsible-section p { margin: 0; white-space: pre-wrap; }
+        .collapsible-section pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -477,12 +486,29 @@ HTML_UI = """
             }
 
             // Results list
-            const resultsHtml = results.map(result => `
+            const resultsHtml = results.map((result, index) => `
                 <div class="result-item">
                     <a href="${result.url}" class="result-title" target="_blank">${result.title}</a>
                     <div class="result-url">${result.url}</div>
                     <div class="result-snippet">${result.snippet}</div>
                     <div class="result-score">Score: ${result.score.toFixed(2)}</div>
+                    <div class="result-buttons">
+                        <button onclick="toggleSection(${index}, 'summary')">Show Summary</button>
+                        <button onclick="toggleSection(${index}, 'content')">Show Content</button>
+                        <button onclick="toggleSection(${index}, 'full_record')">Show Full Record</button>
+                    </div>
+                    <div id="summary-${index}" class="collapsible-section" style="display: none;">
+                        <h4>Summary</h4>
+                        <p>${result.summary}</p>
+                    </div>
+                    <div id="content-${index}" class="collapsible-section" style="display: none;">
+                        <h4>Content</h4>
+                        <p>${result.content}</p>
+                    </div>
+                    <div id="full_record-${index}" class="collapsible-section" style="display: none;">
+                        <h4>Full Record</h4>
+                        <pre>${JSON.stringify(result.full_record, null, 2)}</pre>
+                    </div>
                 </div>
             `).join('');
 
@@ -560,6 +586,18 @@ HTML_UI = """
         document.getElementById('searchInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') performSearch();
         });
+
+        function toggleSection(index, section) {
+            const element = document.getElementById(`${section}-${index}`);
+            const button = event.target;
+            if (element.style.display === 'none') {
+                element.style.display = 'block';
+                button.textContent = button.textContent.replace('Show', 'Hide');
+            } else {
+                element.style.display = 'none';
+                button.textContent = button.textContent.replace('Hide', 'Show');
+            }
+        }
 
         // Keyboard navigation for pagination (left/right arrows)
         document.addEventListener('keydown', function(e) {

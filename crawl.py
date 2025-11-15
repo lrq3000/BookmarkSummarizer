@@ -1164,22 +1164,22 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 with flush_flag_lock:
                     flush_in_progress = False
 
-        def monitor_thread():
-            nonlocal last_flush_time, bookmarks_with_content, failed_records
+        def monitor_thread(bookmarks_with_content, failed_records, last_flush_time_ref):
             while True:
                 time.sleep(1)  # Check every second
                 current_time = time.time()
                 with bookmarks_lock:
-                    if current_time - last_flush_time >= flush_interval:
+                    if current_time - last_flush_time_ref[0] >= flush_interval:
                         # Trigger flush when interval has passed
                         print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
                         flush_to_disk(bookmarks_with_content, failed_records)
                         print("Intermediate flush complete.")
-                        last_flush_time = current_time
+                        last_flush_time_ref[0] = current_time
 
         # Start daemon thread to monitor counter and trigger flushes
         # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.
-        monitor = threading.Thread(target=monitor_thread, daemon=True)
+        last_flush_time_ref = [last_flush_time]  # Use a mutable container to allow modification
+        monitor = threading.Thread(target=monitor_thread, args=(bookmarks_with_content, failed_records, last_flush_time_ref), daemon=True)
         monitor.start()
 
         # Use ThreadPoolExecutor for parallel crawling of bookmark content

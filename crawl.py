@@ -37,6 +37,7 @@ import hashlib
 import threading
 import importlib.util
 import sys
+import signal
 
 # TOML parsing imports with fallback for older Python versions
 try:
@@ -58,6 +59,9 @@ failed_urls_path = os.path.expanduser("./failed_urls.json")
 url_hashes = set()
 content_hashes = set()
 content_lock = threading.Lock()
+
+# Global flag for graceful shutdown
+shutdown_flag = False
 
 # Custom parsers list - dynamically loaded from custom_parsers/ directory
 custom_parsers = []
@@ -104,6 +108,16 @@ def load_custom_parsers():
 
     print(f"Loaded {len(parsers)} custom parsers")
     return parsers
+
+# Signal handler for graceful shutdown
+def signal_handler(signum, frame):
+    """
+    Handle KeyboardInterrupt (CTRL-C) signal for graceful shutdown.
+    Sets the global shutdown flag and prints a shutdown message.
+    """
+    global shutdown_flag
+    print("\nReceived KeyboardInterrupt (CTRL-C). Initiating graceful shutdown...")
+    shutdown_flag = True
 
 # Load TOML configuration
 def load_config(config_path="default_config.toml"):
@@ -972,6 +986,12 @@ def apply_custom_parsers(bookmark, parsers):
 # Crawl webpage content
 def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     """Crawls webpage content"""
+    # Check for shutdown signal at the beginning of processing
+    global shutdown_flag
+    if shutdown_flag:
+        print(f"Shutdown signal received, skipping bookmark processing: {bookmark.get('name', 'No Title')}")
+        return None, None
+
     # Apply custom parsers before fetching content
     global custom_parsers
     bookmark = apply_custom_parsers(bookmark, custom_parsers)
@@ -998,7 +1018,10 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             return None, {"url": url, "title": title, "reason": "Zhihu content crawl failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
     else:
         try:
-            print(f"{progress_info} Starting crawl: {title} - {url}")
+            try:
+                print(f"{progress_info} Starting crawl: {title} - {url}")
+            except UnicodeEncodeError:
+                print(f"{progress_info} Starting crawl: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
             session = create_session()
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -1041,7 +1064,10 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             crawl_method = "requests"
         except Exception as e:
             error_msg = f"Request failed: {str(e)}"
-            print(f"{progress_info} {error_msg}: {title} - {url}")
+            try:
+                print(f"{progress_info} {error_msg}: {title} - {url}")
+            except UnicodeEncodeError:
+                print(f"{progress_info} {error_msg}: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
             failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             return None, failed_info
     
@@ -1135,6 +1161,11 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         for idx, bookmark in enumerate(bookmarks):
+            # Check for shutdown signal
+            if shutdown_flag:
+                print("Shutdown signal received, stopping sequential processing...")
+                break
+
             if new_bookmarks_added >= limit:
                 print(f"Reached limit of {limit} new bookmarks added")
                 break
@@ -1143,12 +1174,18 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
             if url_hash in url_hashes:
                 title = bookmark.get("name", "No Title")
-                print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
+                try:
+                    print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
+                except UnicodeEncodeError:
+                    print(f"Skipping duplicate URL [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
                 continue  # Skip duplicates without counting towards limit
             url_hashes.add(url_hash)
 
             title = bookmark.get("name", "No Title")
-            print(f"Processing bookmark [{idx+1}]: {title} - {url}")
+            try:
+                print(f"Processing bookmark [{idx+1}]: {title} - {url}")
+            except UnicodeEncodeError:
+                print(f"Processing bookmark [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
 
             result, failed_info = fetch_webpage_content(bookmark, idx+1, None)  # No total_count for sequential
             if result:
@@ -1284,6 +1321,11 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             for idx, bookmark in enumerate(bookmarks_to_process):
+                # Check for shutdown signal before submitting new tasks
+                if shutdown_flag:
+                    print("Shutdown signal received, stopping task submission...")
+                    break
+
                 url = bookmark['url']
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
                 if url_hash in url_hashes:
@@ -1301,6 +1343,15 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
             # Use tqdm to create a progress bar
             for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
+                # Check for shutdown signal during processing
+                if shutdown_flag:
+                    print("Shutdown signal received, cancelling remaining futures...")
+                    # Cancel remaining futures
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    break
+
                 result, failed_info = future.result()
                 with bookmarks_lock:
                     if result:
@@ -1414,6 +1465,9 @@ def parse_args():
 
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
+    # Register signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+
     # Parse command-line arguments
     args = parse_args()
 
@@ -1533,7 +1587,10 @@ def main():
             if not args.rebuild:
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
                 if url_hash in url_hashes:
-                    print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
+                    try:
+                        print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
+                    except UnicodeEncodeError:
+                        print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
                     continue
             filtered_bookmarks.append(bookmark)
     

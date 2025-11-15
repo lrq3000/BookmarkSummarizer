@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookmark-summarizer"
-version = "0.1.0"
+version = "0.2.0"
 description = "BookmarkSummarizer is a powerful tool that crawls your Chrome bookmarks, generates summaries using large language models, and turns them into a personal knowledge base. Easily search and utilize all your bookmarked web resources without manual organization."
 readme = {file = "README.MD", content-type = "text/markdown"}
 license = {text = "Apache-2.0"}
@@ -51,6 +51,10 @@ dependencies = [
     "browser-history",
     "tomli; python_version < \"3.11\"",
     "youtube-transcript-api>=0.6.2",
+    "ZODB>=5.8.0",  # Zope Object Database for persistent storage
+    "BTrees>=4.11.0",  # BTree collections for efficient indexing
+    "persistent>=4.9.0",  # Persistent objects for ZODB
+    "transaction>=3.0.0",  # Transaction management for ZODB
 ]
 
 [project.optional-dependencies]

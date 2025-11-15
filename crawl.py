@@ -1,4 +1,5 @@
 # Copyright 2024 wyj
+# Copyright 2025 Stephen Karl Larroque <lrq3000>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,12 +39,23 @@ import threading
 import importlib.util
 import sys
 import signal
+import logging
+import shutil
 
 # TOML parsing imports with fallback for older Python versions
 try:
     import tomllib  # Python 3.11+
 except ImportError:
     import tomli as tomllib  # Fallback for older versions
+
+# ZODB imports for persistent storage
+import ZODB
+from ZODB.FileStorage import FileStorage
+from ZODB.DB import DB
+import BTrees.OOBTree as OOBTree
+import BTrees.IOBTree as IOBTree
+import persistent
+import transaction
 
 
 # --- Browser Profile Configuration ---
@@ -55,16 +67,232 @@ bookmarks_path = os.path.expanduser("./bookmarks.json")
 bookmarks_with_content_path = os.path.expanduser("./bookmarks_with_content.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
 
-# Global sets for deduplication
-url_hashes = set()
-content_hashes = set()
+# ZODB database and persistent structures for on-disk indexing
+# ZODB provides persistent object storage with BTrees for efficient O(1) lookups
+# This replaces in-memory sets with disk-based storage for scalability
+zodb_storage_path = os.path.expanduser("./bookmark_index.fs")
+zodb_db = None
+zodb_connection = None
+url_hashes_tree = None  # BTrees.OOBTree for URL hash deduplication
+content_hashes_tree = None  # BTrees.OOBTree for content hash deduplication
+bookmarks_tree = None  # BTrees.IOBTree for storing bookmarks with integer keys
+failed_records_tree = None  # BTrees.IOBTree for storing failed records
+
 content_lock = threading.Lock()
 
 # Global flag for graceful shutdown
 shutdown_flag = False
 
+# Global recursion depth counter for flush operations
+flush_recursion_depth = 0
+max_flush_recursion_depth = 10  # Maximum allowed recursion depth for flush operations
+
 # Custom parsers list - dynamically loaded from custom_parsers/ directory
 custom_parsers = []
+
+# Setup logging for comprehensive error handling
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('crawl_errors.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# In-memory fallback structures for graceful degradation
+fallback_url_hashes = set()
+fallback_content_hashes = set()
+fallback_bookmarks = []
+fallback_failed_records = []
+use_fallback = False
+
+# Check disk space before ZODB operations
+def check_disk_space(min_space_mb=100):
+    """
+    Check if there's sufficient disk space for ZODB operations.
+
+    Parameters:
+        min_space_mb (int): Minimum required disk space in MB
+
+    Returns:
+        bool: True if sufficient space, False otherwise
+    """
+    try:
+        stat = shutil.disk_usage(zodb_storage_path)
+        free_space_mb = stat.free / (1024 * 1024)
+        if free_space_mb < min_space_mb:
+            logger.error(f"Insufficient disk space: {free_space_mb:.2f} MB free, {min_space_mb} MB required")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking disk space: {e}")
+        return False
+
+# Retry mechanism for transaction operations
+def retry_transaction_operation(operation_func, max_retries=3, delay=1.0):
+    """
+    Retry a transaction operation with exponential backoff.
+
+    Parameters:
+        operation_func (callable): Function to retry
+        max_retries (int): Maximum number of retries
+        delay (float): Initial delay between retries
+
+    Returns:
+        bool: True if operation succeeded, False otherwise
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            operation_func()
+            return True
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Transaction operation failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Transaction operation failed after {max_retries + 1} attempts: {e}")
+                return False
+    return False
+
+# Initialize ZODB database and persistent structures for on-disk indexing
+# ZODB uses BTrees for efficient indexing and provides transactional persistence
+def init_zodb():
+    """
+    Initialize ZODB database with persistent BTrees for deduplication and storage.
+
+    This function sets up the ZODB FileStorage and creates persistent BTree structures:
+    - url_hashes_tree: OOBTree for URL hash deduplication (O(1) lookups)
+    - content_hashes_tree: OOBTree for content hash deduplication (O(1) lookups)
+    - bookmarks_tree: IOBTree for storing bookmarks with integer keys
+    - failed_records_tree: IOBTree for storing failed records with integer keys
+
+    All operations are transactional for data integrity.
+    Includes comprehensive error handling with fallback to in-memory structures.
+    """
+    global zodb_db, zodb_connection, url_hashes_tree, content_hashes_tree, bookmarks_tree, failed_records_tree, use_fallback
+
+    # Check disk space first
+    if not check_disk_space():
+        logger.error("Insufficient disk space for ZODB initialization. Falling back to in-memory structures.")
+        use_fallback = True
+        return
+
+    try:
+        # Create FileStorage for persistent storage
+        storage = FileStorage(zodb_storage_path)
+        zodb_db = DB(storage)
+        zodb_connection = zodb_db.open()
+
+        # Get or create root object
+        root = zodb_connection.root()
+
+        # Initialize persistent BTrees if they don't exist
+        if 'url_hashes' not in root:
+            root['url_hashes'] = OOBTree.OOBTree()
+        url_hashes_tree = root['url_hashes']
+
+        if 'content_hashes' not in root:
+            root['content_hashes'] = OOBTree.OOBTree()
+        content_hashes_tree = root['content_hashes']
+
+        if 'bookmarks' not in root:
+            root['bookmarks'] = IOBTree.IOBTree()
+        bookmarks_tree = root['bookmarks']
+
+        if 'failed_records' not in root:
+            root['failed_records'] = IOBTree.IOBTree()
+        failed_records_tree = root['failed_records']
+
+        # Commit initial setup with retry
+        def commit_initial():
+            transaction.commit()
+
+        if not retry_transaction_operation(commit_initial):
+            raise Exception("Failed to commit initial ZODB setup after retries")
+
+        logger.info(f"Initialized ZODB database at {zodb_storage_path}")
+
+    except Exception as e:
+        logger.error(f"Error initializing ZODB: {e}")
+        use_fallback = True
+
+        # Cleanup on failure
+        try:
+            if zodb_connection:
+                zodb_connection.close()
+            if zodb_db:
+                zodb_db.close()
+        except Exception as cleanup_e:
+            logger.error(f"Error during ZODB cleanup: {cleanup_e}")
+
+        logger.info("Falling back to in-memory structures for data integrity")
+
+# Safe ZODB operations with error handling
+def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB operation"):
+    """
+    Perform a ZODB operation with error handling and fallback support.
+
+    Parameters:
+        operation_func (callable): Function performing the ZODB operation
+        fallback_func (callable, optional): Fallback function if ZODB fails
+        operation_name (str): Name of the operation for logging
+
+    Returns:
+        Any: Result of the operation or fallback
+    """
+    global use_fallback
+
+    if use_fallback:
+        if fallback_func:
+            try:
+                return fallback_func()
+            except Exception as e:
+                logger.error(f"Fallback {operation_name} failed: {e}")
+                return None
+        return None
+
+    try:
+        return operation_func()
+    except Exception as e:
+        logger.error(f"{operation_name} failed: {e}")
+        use_fallback = True
+        if fallback_func:
+            try:
+                logger.info(f"Attempting fallback for {operation_name}")
+                return fallback_func()
+            except Exception as fallback_e:
+                logger.error(f"Fallback {operation_name} failed: {fallback_e}")
+        return None
+
+# Cleanup ZODB resources
+def cleanup_zodb():
+    """
+    Properly close ZODB connection and database to ensure data integrity.
+    """
+    global zodb_connection, zodb_db
+    try:
+        if zodb_connection:
+            # Try to commit any pending changes with retry
+            def commit_pending():
+                transaction.commit()
+
+            if not retry_transaction_operation(commit_pending):
+                logger.warning("Failed to commit pending changes during cleanup")
+                transaction.abort()  # Abort if commit fails
+
+            zodb_connection.close()
+        if zodb_db:
+            zodb_db.close()
+        logger.info("ZODB cleanup completed")
+    except Exception as e:
+        logger.error(f"Error during ZODB cleanup: {e}")
+        try:
+            transaction.abort()  # Ensure transaction is aborted on error
+        except:
+            pass
 
 # Load custom parsers from custom_parsers/ directory
 def load_custom_parsers():
@@ -113,11 +341,12 @@ def load_custom_parsers():
 def signal_handler(signum, frame):
     """
     Handle KeyboardInterrupt (CTRL-C) signal for graceful shutdown.
-    Sets the global shutdown flag and prints a shutdown message.
+    Sets the global shutdown flag, cleans up ZODB resources, and prints a shutdown message.
     """
     global shutdown_flag
     print("\nReceived KeyboardInterrupt (CTRL-C). Initiating graceful shutdown...")
     shutdown_flag = True
+    cleanup_zodb()
 
 # Load TOML configuration
 def load_config(config_path="default_config.toml"):
@@ -608,12 +837,12 @@ def test_api_connection(config=None):
         print(f"Detailed error information: {traceback_str}")
         return False
 
-# Add summary generation step in the main function
+# Generate summaries for bookmarks stored in ZODB
 def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, force_recompute=False):
     """
-    Generates summaries for bookmark content.
+    Generates summaries for bookmark content stored in ZODB.
 
-    This function iterates through the provided bookmarks with content and generates AI-powered summaries
+    This function iterates through the ZODB bookmarks tree and generates AI-powered summaries
     using the configured language model. By default, it skips bookmarks that already have a non-empty
     "summary" field to avoid redundant API calls and preserve existing summaries. The force_recompute
     parameter allows overriding this behavior to regenerate all summaries, which is useful for updating
@@ -637,27 +866,13 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
     if force_recompute:
         print("Force recompute mode enabled: regenerating all summaries regardless of existing ones.")
 
-    # First, read the existing file content
-    try:
-        with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
-            existing_data = json.load(f)
-            # Create a map from URL to bookmark for quick lookup of existing summaries
-            existing_map = {item.get('url'): item for item in existing_data}
-    except (FileNotFoundError, json.JSONDecodeError):
-        existing_map = {}
-        existing_data = []
+    # Create a map from URL to bookmark for quick lookup of existing summaries from ZODB
+    existing_map = {}
+    for key, bookmark in bookmarks_tree.items():
+        url = bookmark.get('url')
+        if url:
+            existing_map[url] = bookmark
 
-    # Use a temporary file to save progress
-    temp_file_path = f"{bookmarks_with_content_path}.temp"
-    
-    # Copy existing data to the temporary file
-    try:
-        with open(temp_file_path, 'w', encoding='utf-8') as f:
-            json.dump(existing_data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"Failed to create temporary file: {str(e)}")
-        return existing_data  # Return existing data
-    
     success_count = 0
     skipped_count = 0
     for idx, bookmark in enumerate(tqdm(bookmarks_with_content, desc="Summary Generation Progress")):
@@ -673,55 +888,60 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
             success_count += 1
             skipped_count += 1
             continue
-        
+
         progress_info = f"[{idx+1}/{total_count}]"
         print(f"{progress_info} Generating summary for the following link: {url}")
-        
+
         # Generate summary
         summary = generate_summary(title, bookmark["content"], url, model_config)
         print(f"{progress_info} title: {title}")
         print(f"{progress_info} summary length: {len(summary)} characters")
         print(f"{progress_info} summary truncated: {summary[:200]}...")
-        
+
         # Add summary to bookmark data
         bookmark["summary"] = summary
         bookmark["summary_model"] = model_config.model_name
         bookmark["summary_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        
+
         if "Summary generation failed" not in summary:
             success_count += 1
             print(f"{progress_info} Summary generated successfully")
-            
-            # Update data structure
-            if url in existing_map:
-                # Update existing record
-                for i, item in enumerate(existing_data):
-                    if item.get('url') == url:
-                        existing_data[i] = bookmark
-                        break
-            else:
-                # Add new record
-                existing_data.append(bookmark)
-            
-            # Save to temporary file
+
+            # Update ZODB bookmark record transactionally
             try:
-                with open(temp_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(existing_data, f, ensure_ascii=False, indent=4)
-                # After successfully writing to the temporary file, replace the original file
-                os.replace(temp_file_path, bookmarks_with_content_path)
-                print(f"{progress_info} Current progress saved")
+                # Find the key for this bookmark in ZODB
+                bookmark_key = None
+                for key, existing_bookmark in bookmarks_tree.items():
+                    if existing_bookmark.get('url') == url:
+                        bookmark_key = key
+                        break
+
+                if bookmark_key is not None:
+                    # Update existing record
+                    bookmarks_tree[bookmark_key] = bookmark
+                else:
+                    # Add new record with next available key
+                    next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
+                    bookmarks_tree[next_key] = bookmark
+
+                # Commit the transaction to persist changes
+                transaction.commit()
+                print(f"{progress_info} Current progress saved to ZODB")
             except Exception as e:
-                print(f"{progress_info} Error saving progress: {str(e)}")
+                print(f"{progress_info} Error saving to ZODB: {str(e)}")
+                transaction.abort()  # Rollback on error
         else:
             print(f"{progress_info} Summary generation failed: {summary}")
-        
+
         # Brief pause after each request to avoid API limits
         time.sleep(0.5)
-    
+
     print(f"Summary generation complete! Success: {success_count}/{total_count}")
     if not force_recompute:
         print(f"Skipped {skipped_count} bookmarks with existing summaries.")
-    return existing_data
+
+    # Return bookmarks as list from ZODB for compatibility
+    return list(bookmarks_tree.values())
 
 # Fetch bookmarks using browser_history module
 def get_bookmarks(browser=None, profile_path=None):
@@ -1101,13 +1321,32 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
         failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         return None, failed_info
             
-    # Check for content deduplication
+    # Check for content deduplication using ZODB BTree (transactional)
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    print(f"{progress_info} DEBUG: Generated content hash: {content_hash[:16]}... for URL: {url}")
     with content_lock:
-        if content_hash in content_hashes:
-            print(f"{progress_info} Skipping duplicate content: {title} - {url}")
-            return None, None  # Skip saving, but not a failure
-        content_hashes.add(content_hash)
+        try:
+            if content_hash in content_hashes_tree:
+                print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
+                return None, None  # Skip saving, but not a failure
+            print(f"{progress_info} DEBUG: Content hash not found in tree, adding: {content_hash[:16]}...")
+            content_hashes_tree[content_hash] = True
+            # Use retry mechanism for transaction commit
+            def commit_dedup():
+                transaction.commit()
+            if not retry_transaction_operation(commit_dedup):
+                logger.error(f"Failed to commit content deduplication for {url}")
+                return None, None
+        except Exception as e:
+            logger.error(f"Error during content deduplication check: {e}")
+            if use_fallback:
+                # Use fallback in-memory check
+                if content_hash in fallback_content_hashes:
+                    print(f"{progress_info} Skipping duplicate content (fallback): {title} - {url}")
+                    return None, None
+                fallback_content_hashes.add(content_hash)
+            else:
+                return None, None
 
     # Create a copy of the bookmark including the content
     bookmark_with_content = bookmark.copy()
@@ -1133,28 +1372,78 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         # Initialize flush tracking
         last_flush_time = time.time()
 
-        def flush_to_disk_sequential(current_bookmarks, current_failed):
-            """Flush current bookmarks and failed records to disk for sequential processing"""
+        def flush_to_disk_sequential(current_bookmarks, current_failed, max_batch_size=50):
+            """Flush current bookmarks and failed records to ZODB for sequential processing using batched iterative approach"""
+            global flush_recursion_depth
+            flush_recursion_depth += 1
+
+            # Check for excessive recursion depth
+            if flush_recursion_depth > max_flush_recursion_depth:
+                print(f"Maximum flush recursion depth ({max_flush_recursion_depth}) exceeded. Aborting flush to prevent infinite recursion.")
+                flush_recursion_depth -= 1
+                raise RecursionError("Maximum flush recursion depth exceeded")
+
             try:
-                # Read existing bookmarks_with_content.json
-                try:
-                    with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
-                        existing_bookmarks = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    existing_bookmarks = []
+                # Process bookmarks in smaller batches to prevent recursion issues
+                bookmarks_processed = 0
+                failed_processed = 0
 
-                # Merge current bookmarks with existing
-                merged_bookmarks = existing_bookmarks + current_bookmarks
+                # Batch process bookmarks
+                for i in range(0, len(current_bookmarks), max_batch_size):
+                    batch = current_bookmarks[i:i + max_batch_size]
+                    for bookmark in batch:
+                        url = bookmark.get('url')
+                        if url:
+                            # Check if bookmark already exists (iterative search)
+                            existing_key = None
+                            try:
+                                for key, existing_bookmark in bookmarks_tree.items():
+                                    if existing_bookmark.get('url') == url:
+                                        existing_key = key
+                                        break
+                            except Exception as e:
+                                logger.error(f"Error searching for existing bookmark: {e}")
+                                existing_key = None
 
-                # Save atomically using temp file
-                temp_file_path = bookmarks_with_content_path + '.temp'
-                with open(temp_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(merged_bookmarks, f, ensure_ascii=False, indent=4)
-                os.replace(temp_file_path, bookmarks_with_content_path)
+                            if existing_key is not None:
+                                bookmarks_tree[existing_key] = bookmark
+                            else:
+                                next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
+                                bookmarks_tree[next_key] = bookmark
+                    bookmarks_processed += len(batch)
+
+                    # Commit after each batch to prevent large transactions
+                    transaction.commit()
+                    print(f"Committed batch of {len(batch)} bookmarks to ZODB")
+
+                # Batch process failed records
+                for i in range(0, len(current_failed), max_batch_size):
+                    batch = current_failed[i:i + max_batch_size]
+                    for failed_record in batch:
+                        next_key = max(failed_records_tree.keys()) + 1 if failed_records_tree else 1
+                        failed_records_tree[next_key] = failed_record
+                    failed_processed += len(batch)
+
+                    # Commit after each batch
+                    transaction.commit()
+                    print(f"Committed batch of {len(batch)} failed records to ZODB")
+
+                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to ZODB in batches")
 
                 # Note: Do not clear lists in sequential mode to maintain return values
+            except RecursionError as e:
+                print(f"Recursion error during sequential flush: {e}")
+                transaction.abort()
+                # Clear problematic data to prevent infinite retries
+                current_bookmarks.clear()
+                current_failed.clear()
+                raise Exception("Recursion error in flush operation - cleared buffers to prevent infinite loop")
             except Exception as e:
                 print(f"Error during sequential periodic flush: {e}")
+                transaction.abort()
+                # Don't clear lists on general errors to allow retry
+            finally:
+                flush_recursion_depth -= 1
 
         start_time = time.time()
         print(f"Starting sequential crawl of bookmark content")
@@ -1172,14 +1461,30 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
             url = bookmark['url']
             url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-            if url_hash in url_hashes:
-                title = bookmark.get("name", "No Title")
-                try:
-                    print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
-                except UnicodeEncodeError:
-                    print(f"Skipping duplicate URL [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
-                continue  # Skip duplicates without counting towards limit
-            url_hashes.add(url_hash)
+            try:
+                if url_hash in url_hashes_tree:
+                    title = bookmark.get("name", "No Title")
+                    try:
+                        print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
+                    except UnicodeEncodeError:
+                        print(f"Skipping duplicate URL [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                    continue  # Skip duplicates without counting towards limit
+                url_hashes_tree[url_hash] = True
+                # Use retry mechanism for transaction commit
+                def commit_url_dedup():
+                    transaction.commit()
+                if not retry_transaction_operation(commit_url_dedup):
+                    logger.error(f"Failed to commit URL deduplication for {url}")
+                    continue
+            except Exception as e:
+                logger.error(f"Error during URL deduplication check: {e}")
+                if use_fallback:
+                    # Use fallback in-memory check
+                    if url_hash in fallback_url_hashes:
+                        continue
+                    fallback_url_hashes.add(url_hash)
+                else:
+                    continue
 
             title = bookmark.get("name", "No Title")
             try:
@@ -1197,9 +1502,14 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 current_time = time.time()
                 if current_time - last_flush_time >= flush_interval:
                     print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
-                    flush_to_disk_sequential(bookmarks_with_content, failed_records)
-                    print("Intermediate flush complete.")
-                    last_flush_time = current_time
+                    try:
+                        flush_to_disk_sequential(bookmarks_with_content, failed_records)
+                        print("Intermediate flush complete.")
+                        last_flush_time = current_time
+                    except Exception as e:
+                        print(f"Intermediate flush failed: {e}")
+                        # Continue processing even if flush fails
+                        # Don't update last_flush_time to retry on next interval
 
             if failed_info:
                 if not skip_unreachable:
@@ -1215,9 +1525,14 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     current_time = time.time()
                     if current_time - last_flush_time >= flush_interval:
                         print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
-                        flush_to_disk_sequential(bookmarks_with_content, failed_records)
-                        print("Intermediate flush complete.")
-                        last_flush_time = current_time
+                        try:
+                            flush_to_disk_sequential(bookmarks_with_content, failed_records)
+                            print("Intermediate flush complete.")
+                            last_flush_time = current_time
+                        except Exception as e:
+                            print(f"Intermediate flush failed: {e}")
+                            # Continue processing even if flush fails
+                            # Don't update last_flush_time to retry on next interval
                 failed_records.append(failed_info)
 
         end_time = time.time()
@@ -1240,8 +1555,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         # Force final flush after all processing is complete
         if bookmarks_with_content or failed_records:
             print("Performing final flush to disk...")
-            flush_to_disk_sequential(bookmarks_with_content, failed_records)
-            print("Final flush complete.")
+            try:
+                flush_to_disk_sequential(bookmarks_with_content, failed_records)
+                print("Final flush complete.")
+            except Exception as e:
+                print(f"Final flush failed: {e}")
+                # Continue with return even if final flush fails
 
         return bookmarks_with_content, failed_records, new_bookmarks_added
     else:
@@ -1260,37 +1579,87 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         flush_in_progress = False
         flush_flag_lock = threading.Lock()
 
-        def flush_to_disk(current_bookmarks, current_failed):
+        def flush_to_disk(current_bookmarks, current_failed, max_batch_size=50):
             nonlocal flush_in_progress
+            global flush_recursion_depth
+            flush_recursion_depth += 1
+
+            # Check for excessive recursion depth
+            if flush_recursion_depth > max_flush_recursion_depth:
+                print(f"Maximum flush recursion depth ({max_flush_recursion_depth}) exceeded. Aborting flush to prevent infinite recursion.")
+                flush_recursion_depth -= 1
+                return  # Don't raise exception in parallel mode, just return
+
             with flush_flag_lock:
                 if flush_in_progress:
+                    flush_recursion_depth -= 1
                     return  # Prevent overlapping flushes
                 flush_in_progress = True
             try:
-                # Read existing bookmarks_with_content.json
-                try:
-                    with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
-                        existing_bookmarks = json.load(f)
-                except (FileNotFoundError, json.JSONDecodeError):
-                    existing_bookmarks = []
+                # Process bookmarks and failed records in smaller batches to prevent recursion issues
+                bookmarks_processed = 0
+                failed_processed = 0
 
-                # Merge current bookmarks with existing
-                merged_bookmarks = existing_bookmarks + current_bookmarks
+                # Batch process bookmarks
+                for i in range(0, len(current_bookmarks), max_batch_size):
+                    batch = current_bookmarks[i:i + max_batch_size]
+                    for bookmark in batch:
+                        url = bookmark.get('url')
+                        if url:
+                            # Check if bookmark already exists (iterative search)
+                            existing_key = None
+                            try:
+                                for key, existing_bookmark in bookmarks_tree.items():
+                                    if existing_bookmark.get('url') == url:
+                                        existing_key = key
+                                        break
+                            except Exception as e:
+                                logger.error(f"Error searching for existing bookmark: {e}")
+                                existing_key = None
 
-                # Save atomically using temp file
-                temp_file_path = bookmarks_with_content_path + '.temp'
-                with open(temp_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(merged_bookmarks, f, ensure_ascii=False, indent=4)
-                os.replace(temp_file_path, bookmarks_with_content_path)
+                            if existing_key is not None:
+                                bookmarks_tree[existing_key] = bookmark
+                            else:
+                                next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
+                                bookmarks_tree[next_key] = bookmark
+                    bookmarks_processed += len(batch)
+
+                    # Commit after each batch to prevent large transactions
+                    transaction.commit()
+                    print(f"Committed batch of {len(batch)} bookmarks to ZODB")
+
+                # Batch process failed records
+                for i in range(0, len(current_failed), max_batch_size):
+                    batch = current_failed[i:i + max_batch_size]
+                    for failed_record in batch:
+                        next_key = max(failed_records_tree.keys()) + 1 if failed_records_tree else 1
+                        failed_records_tree[next_key] = failed_record
+                    failed_processed += len(batch)
+
+                    # Commit after each batch
+                    transaction.commit()
+                    print(f"Committed batch of {len(batch)} failed records to ZODB")
+
+                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to ZODB in batches")
 
                 # Clear the current lists after successful flush
                 current_bookmarks.clear()
                 current_failed.clear()
+            except RecursionError as e:
+                print(f"Recursion error during parallel flush: {e}")
+                transaction.abort()
+                # Clear problematic data to prevent infinite retries
+                current_bookmarks.clear()
+                current_failed.clear()
+                # Don't raise exception in parallel mode
             except Exception as e:
                 print(f"Error during periodic flush: {e}")
+                transaction.abort()
+                # Don't clear lists on general errors to allow retry
             finally:
                 with flush_flag_lock:
                     flush_in_progress = False
+                flush_recursion_depth -= 1
 
         def monitor_thread(bookmarks_with_content, failed_records, last_flush_time_ref):
             while True:
@@ -1300,9 +1669,14 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     if current_time - last_flush_time_ref[0] >= flush_interval:
                         # Trigger flush when interval has passed
                         print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
-                        flush_to_disk(bookmarks_with_content, failed_records)
-                        print("Intermediate flush complete.")
-                        last_flush_time_ref[0] = current_time
+                        try:
+                            flush_to_disk(bookmarks_with_content, failed_records)
+                            print("Intermediate flush complete.")
+                            last_flush_time_ref[0] = current_time
+                        except Exception as e:
+                            print(f"Intermediate flush failed: {e}")
+                            # Continue monitoring even if flush fails
+                            # Don't update last_flush_time_ref to retry on next interval
 
         # Start daemon thread to monitor counter and trigger flushes
         # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.
@@ -1328,12 +1702,29 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
                 url = bookmark['url']
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                if url_hash in url_hashes:
-                    title = bookmark.get("name", "No Title")
-                    print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
-                    skipped_url_count += 1
-                    continue
-                url_hashes.add(url_hash)
+                try:
+                    if url_hash in url_hashes_tree:
+                        title = bookmark.get("name", "No Title")
+                        print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
+                        skipped_url_count += 1
+                        continue
+                    url_hashes_tree[url_hash] = True
+                    # Use retry mechanism for transaction commit
+                    def commit_url_dedup_parallel():
+                        transaction.commit()
+                    if not retry_transaction_operation(commit_url_dedup_parallel):
+                        logger.error(f"Failed to commit URL deduplication for {url}")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error during URL deduplication check: {e}")
+                    if use_fallback:
+                        # Use fallback in-memory check
+                        if url_hash in fallback_url_hashes:
+                            skipped_url_count += 1
+                            continue
+                        fallback_url_hashes.add(url_hash)
+                    else:
+                        continue
 
                 # Print progress before submitting the task
                 title = bookmark.get("name", "No Title")
@@ -1384,9 +1775,13 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         # Force final flush after all processing is complete
         with bookmarks_lock:
             if bookmarks_with_content or failed_records:
-                print("Performing final flush to disk...")
-                flush_to_disk(bookmarks_with_content, failed_records)
-                print("Final flush complete.")
+                print("Performing final flush to ZODB...")
+                try:
+                    flush_to_disk(bookmarks_with_content, failed_records)
+                    print("Final flush complete.")
+                except Exception as e:
+                    print(f"Final flush failed: {e}")
+                    # Continue with return even if final flush fails
 
         return bookmarks_with_content, failed_records, len(bookmarks_with_content)
 
@@ -1484,41 +1879,82 @@ def main():
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
     flush_interval = args.flush_interval  # Interval for flushing to disk
 
-    # Load existing bookmarks_with_content.json if not rebuilding from scratch
+    # Initialize ZODB for persistent storage
+    init_zodb()
+
+    # Load existing bookmarks from ZODB if not rebuilding from scratch
     existing_bookmarks = []
     if not args.rebuild:
-        try:
-            with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
-                existing_bookmarks = json.load(f)
-            print(f"Loaded {len(existing_bookmarks)} existing bookmarks from {bookmarks_with_content_path}")
+        existing_bookmarks = list(bookmarks_tree.values())
+        print(f"Loaded {len(existing_bookmarks)} existing bookmarks from ZODB")
 
-            # Populate global deduplication sets with existing data
-            global url_hashes, content_hashes
+        # Populate ZODB deduplication trees with existing data
+        try:
             for bookmark in existing_bookmarks:
                 url = bookmark.get('url')
                 if url:
                     url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                    url_hashes.add(url_hash)
+                    url_hashes_tree[url_hash] = True
                 content = bookmark.get('content')
                 if content:
                     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-                    content_hashes.add(content_hash)
-            print(f"Populated deduplication sets: {len(url_hashes)} URLs, {len(content_hashes)} content hashes")
-        except (FileNotFoundError, json.JSONDecodeError):
-            print(f"No existing {bookmarks_with_content_path} found or invalid JSON, starting fresh")
-            existing_bookmarks = []
+                    content_hashes_tree[content_hash] = True
+            # Use retry mechanism for transaction commit
+            def commit_dedup_data():
+                transaction.commit()
+            if not retry_transaction_operation(commit_dedup_data):
+                logger.error("Failed to commit deduplication data population")
+                use_fallback = True
+            else:
+                print(f"Populated ZODB deduplication trees: {len(url_hashes_tree)} URLs, {len(content_hashes_tree)} content hashes")
+        except Exception as e:
+            logger.error(f"Error populating deduplication trees: {e}")
+            use_fallback = True
+            # Populate fallback structures
+            for bookmark in existing_bookmarks:
+                url = bookmark.get('url')
+                if url:
+                    url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                    fallback_url_hashes.add(url_hash)
+                content = bookmark.get('content')
+                if content:
+                    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                    fallback_content_hashes.add(content_hash)
+            print(f"Populated fallback deduplication structures: {len(fallback_url_hashes)} URLs, {len(fallback_content_hashes)} content hashes")
     else:
         print("Rebuilding from scratch (--rebuild flag used)")
-
-    # If the --from-json argument is used, read directly from the JSON file and generate summaries
-    if args.from_json:
-        print("Generating summaries from existing bookmarks_with_content.json...")
+        # Clear existing deduplication trees for rebuild
         try:
-            with open(bookmarks_with_content_path, 'r', encoding='utf-8') as f:
-                bookmarks_with_content = json.load(f)
+            url_hashes_tree.clear()
+            content_hashes_tree.clear()
+            bookmarks_tree.clear()
+            failed_records_tree.clear()
+            # Use retry mechanism for transaction commit
+            def commit_clear():
+                transaction.commit()
+            if not retry_transaction_operation(commit_clear):
+                logger.error("Failed to commit ZODB tree clearing for rebuild")
+                use_fallback = True
+            else:
+                print("Cleared existing ZODB trees for rebuild")
+        except Exception as e:
+            logger.error(f"Error clearing ZODB trees for rebuild: {e}")
+            use_fallback = True
+            # Clear fallback structures
+            fallback_url_hashes.clear()
+            fallback_content_hashes.clear()
+            fallback_bookmarks.clear()
+            fallback_failed_records.clear()
+            print("Cleared fallback structures for rebuild")
+
+    # If the --from-json argument is used, read directly from ZODB and generate summaries
+    if args.from_json:
+        print("Generating summaries from existing bookmarks in ZODB...")
+        try:
+            bookmarks_with_content = list(bookmarks_tree.values())
 
             if not bookmarks_with_content:
-                print("Error: bookmarks_with_content.json is empty or incorrectly formatted")
+                print("Error: ZODB bookmarks tree is empty")
                 return
 
             if bookmark_limit > 0:
@@ -1536,31 +1972,11 @@ def main():
             # Generate summaries for content, respecting the force recompute flag
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
 
-            # Save the updated content using atomic temp file
-            temp_file_path = f"{bookmarks_with_content_path}.temp"
-            try:
-                with open(temp_file_path, "w", encoding="utf-8") as output_file:
-                    json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
-                # Atomic replace
-                os.replace(temp_file_path, bookmarks_with_content_path)
-                print(f"Successfully saved {len(bookmarks_with_content)} bookmarks to {bookmarks_with_content_path}")
-            except Exception as e:
-                print(f"Error saving bookmarks: {str(e)}")
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-                raise
-
-            print(f"Summary generation complete, {bookmarks_with_content_path} updated")
+            print(f"Summary generation complete, ZODB updated with {len(bookmarks_with_content)} bookmarks")
             return
 
-        except FileNotFoundError:
-            print(f"Error: File not found {bookmarks_with_content_path}")
-            return
-        except json.JSONDecodeError:
-            print(f"Error: {bookmarks_with_content_path} is not a valid JSON file")
-            return
         except Exception as e:
-            print(f"Error processing JSON file: {str(e)}")
+            print(f"Error processing ZODB data: {str(e)}")
             return
 
     # Original crawling logic
@@ -1583,15 +1999,24 @@ def main():
             bookmark["type"] == "url" and
             bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
             not re.match(r"https?://10\.0\.", url)):
-            # If not rebuilding, skip URLs already in existing bookmarks
+            # If not rebuilding, skip URLs already in ZODB bookmarks
             if not args.rebuild:
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                if url_hash in url_hashes:
-                    try:
-                        print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
-                    except UnicodeEncodeError:
-                        print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
-                    continue
+                try:
+                    if url_hash in url_hashes_tree:
+                        try:
+                            print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
+                        except UnicodeEncodeError:
+                            print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
+                        continue
+                except Exception as e:
+                    logger.error(f"Error checking URL deduplication: {e}")
+                    if use_fallback and url_hash in fallback_url_hashes:
+                        try:
+                            print(f"Skipping already indexed URL (fallback): {bookmark.get('name', 'No Title')} - {url}")
+                        except UnicodeEncodeError:
+                            print(f"Skipping already indexed URL (fallback): {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
+                        continue
             filtered_bookmarks.append(bookmark)
     
     # Save filtered bookmark data
@@ -1622,28 +2047,45 @@ def main():
     elif not generate_summary_flag:
         print("Skipping summary generation step based on configuration...")
 
-    # Merge new crawled results with existing data if not rebuilding
-    if not args.rebuild:
-        bookmarks_with_content = existing_bookmarks + bookmarks_with_content
-        print(f"Merged {len(existing_bookmarks)} existing bookmarks with {len(bookmarks_with_content) - len(existing_bookmarks)} new bookmarks")
-
-    # Save bookmark data with content using atomic temp file
-    temp_file_path = f"{bookmarks_with_content_path}.temp"
+    # All bookmarks are already stored in ZODB via periodic flushes
+    # Just ensure final commit and provide summary
     try:
-        with open(temp_file_path, "w", encoding="utf-8") as output_file:
-            json.dump(bookmarks_with_content, output_file, ensure_ascii=False, indent=4)
-        # Atomic replace
-        os.replace(temp_file_path, bookmarks_with_content_path)
-        print(f"Successfully saved {len(bookmarks_with_content)} bookmarks to {bookmarks_with_content_path}")
+        def final_commit():
+            transaction.commit()
+        if not retry_transaction_operation(final_commit):
+            logger.error("Failed to perform final transaction commit")
+        bookmarks_with_content = safe_zodb_operation(
+            lambda: list(bookmarks_tree.values()),
+            lambda: fallback_bookmarks.copy(),
+            "retrieving final bookmarks list"
+        )
+        if bookmarks_with_content is None:
+            bookmarks_with_content = []
+        print(f"ZODB contains {len(bookmarks_with_content)} total bookmarks")
     except Exception as e:
-        print(f"Error saving bookmarks: {str(e)}")
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-        raise
-    
-    # Save failed URLs and reasons
-    with open(failed_urls_path, "w", encoding="utf-8") as f:
-        json.dump(failed_records, f, ensure_ascii=False, indent=4)
+        logger.error(f"Error during final commit and summary: {e}")
+        bookmarks_with_content = fallback_bookmarks.copy() if use_fallback else []
+        print(f"Fallback contains {len(bookmarks_with_content)} total bookmarks")
+
+    # Save failed URLs and reasons (keeping JSON format for compatibility)
+    try:
+        failed_records_list = safe_zodb_operation(
+            lambda: list(failed_records_tree.values()),
+            lambda: fallback_failed_records.copy(),
+            "retrieving failed records list"
+        )
+        if failed_records_list is None:
+            failed_records_list = []
+        with open(failed_urls_path, "w", encoding="utf-8") as f:
+            json.dump(failed_records_list, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving failed URLs: {e}")
+        # Try to save fallback data
+        try:
+            with open(failed_urls_path, "w", encoding="utf-8") as f:
+                json.dump(fallback_failed_records, f, ensure_ascii=False, indent=4)
+        except Exception as fallback_e:
+            logger.error(f"Error saving fallback failed URLs: {fallback_e}")
     
     print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
     print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {bookmarks_with_content_path}")
@@ -1655,20 +2097,38 @@ def main():
         print("\nFailed URLs and Titles:")
         for idx, record in enumerate(failed_records):
             print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
+    elif use_fallback and fallback_failed_records:
+        print("\nFailed URLs and Titles (from fallback):")
+        for idx, record in enumerate(fallback_failed_records):
+            print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
     
-    # Display content length statistics
+    # Display content length statistics from ZODB
     if bookmarks_with_content:
-        total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)
-        avg_length = total_length / len(bookmarks_with_content)
-        print(f"Average crawled content length: {avg_length:.2f} characters")
-        print(f"Longest content: {max(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
-        print(f"Shortest content: {min(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
-        
-        # Statistics on crawl methods used
-        selenium_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "selenium")
-        requests_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "requests")
-        print(f"Crawled using Selenium: {selenium_count} items")
-        print(f"Crawled using Requests: {requests_count} items")
+        try:
+            total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)
+            avg_length = total_length / len(bookmarks_with_content)
+            print(f"Average crawled content length: {avg_length:.2f} characters")
+            print(f"Longest content: {max(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
+            print(f"Shortest content: {min(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
+
+            # Statistics on crawl methods used
+            selenium_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "selenium")
+            requests_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "requests")
+            print(f"Crawled using Selenium: {selenium_count} items")
+            print(f"Crawled using Requests: {requests_count} items")
+        except Exception as e:
+            logger.error(f"Error calculating statistics: {e}")
+    elif use_fallback:
+        print("Using fallback mode - statistics not available")
+
+    # Cleanup ZODB resources
+    cleanup_zodb()
+
+    # Log final status
+    if use_fallback:
+        logger.warning("Script completed using fallback in-memory structures due to ZODB issues")
+    else:
+        logger.info("Script completed successfully with ZODB persistence")
 
 # This function is redundant as its logic is mostly covered by fetch_with_selenium, 
 # but it was present in the original file. I will translate it and keep it for completeness, 

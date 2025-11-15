@@ -1,4 +1,5 @@
 # Copyright 2024 wyj
+# Copyright 2025 Stephen Karl Larroque <lrq3000>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.

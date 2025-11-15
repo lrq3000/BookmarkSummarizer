@@ -120,7 +120,16 @@ def check_disk_space(min_space_mb=100):
         bool: True if sufficient space, False otherwise
     """
     try:
-        stat = shutil.disk_usage(zodb_storage_path)
+        # Get the directory containing the storage file
+        storage_dir = os.path.dirname(os.path.abspath(zodb_storage_path))
+        if not os.path.exists(storage_dir):
+            # If directory doesn't exist, try to create it
+            try:
+                os.makedirs(storage_dir, exist_ok=True)
+            except Exception as e:
+                logger.error(f"Cannot create storage directory {storage_dir}: {e}")
+                return False
+        stat = shutil.disk_usage(storage_dir)
         free_space_mb = stat.free / (1024 * 1024)
         if free_space_mb < min_space_mb:
             logger.error(f"Insufficient disk space: {free_space_mb:.2f} MB free, {min_space_mb} MB required")
@@ -1885,7 +1894,13 @@ def main():
     # Load existing bookmarks from ZODB if not rebuilding from scratch
     existing_bookmarks = []
     if not args.rebuild:
-        existing_bookmarks = list(bookmarks_tree.values())
+        existing_bookmarks = safe_zodb_operation(
+            lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+            lambda: fallback_bookmarks.copy(),
+            "loading existing bookmarks"
+        )
+        if existing_bookmarks is None:
+            existing_bookmarks = []
         print(f"Loaded {len(existing_bookmarks)} existing bookmarks from ZODB")
 
         # Populate ZODB deduplication trees with existing data
@@ -1951,7 +1966,13 @@ def main():
     if args.from_json:
         print("Generating summaries from existing bookmarks in ZODB...")
         try:
-            bookmarks_with_content = list(bookmarks_tree.values())
+            bookmarks_with_content = safe_zodb_operation(
+                lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+                lambda: fallback_bookmarks.copy(),
+                "loading bookmarks for summary generation"
+            )
+            if bookmarks_with_content is None:
+                bookmarks_with_content = []
 
             if not bookmarks_with_content:
                 print("Error: ZODB bookmarks tree is empty")

@@ -1178,7 +1178,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
         # Start daemon thread to monitor counter and trigger flushes
         # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.
-        last_flush_time_ref = [last_flush_time]  # Use a mutable container to allow modification
+        last_flush_time_ref = [last_flush_time]  # Use a mutable container to allow modification inside the thread
         monitor = threading.Thread(target=monitor_thread, args=(bookmarks_with_content, failed_records, last_flush_time_ref), daemon=True)
         monitor.start()
 

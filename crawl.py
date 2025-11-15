@@ -76,15 +76,13 @@ url_hashes_tree = None  # BTrees.OOBTree for URL hash deduplication
 content_hashes_tree = None  # BTrees.OOBTree for content hash deduplication
 bookmarks_tree = None  # BTrees.IOBTree for storing bookmarks with integer keys
 failed_records_tree = None  # BTrees.IOBTree for storing failed records
+url_to_key_tree = None  # BTrees.OOBTree for URL to key mapping (O(1) lookups for flushing)
 
 content_lock = threading.Lock()
 
 # Global flag for graceful shutdown
 shutdown_flag = False
 
-# Global recursion depth counter for flush operations
-flush_recursion_depth = 0
-max_flush_recursion_depth = 10  # Maximum allowed recursion depth for flush operations
 
 # Custom parsers list - dynamically loaded from custom_parsers/ directory
 custom_parsers = []
@@ -176,11 +174,12 @@ def init_zodb():
     - content_hashes_tree: OOBTree for content hash deduplication (O(1) lookups)
     - bookmarks_tree: IOBTree for storing bookmarks with integer keys
     - failed_records_tree: IOBTree for storing failed records with integer keys
+    - url_to_key_tree: OOBTree for URL to key mapping (O(1) lookups for flushing)
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
     """
-    global zodb_db, zodb_connection, url_hashes_tree, content_hashes_tree, bookmarks_tree, failed_records_tree, use_fallback
+    global zodb_db, zodb_connection, url_hashes_tree, content_hashes_tree, bookmarks_tree, failed_records_tree, url_to_key_tree, use_fallback
 
     # Check disk space first
     if not check_disk_space():
@@ -213,6 +212,11 @@ def init_zodb():
         if 'failed_records' not in root:
             root['failed_records'] = IOBTree.IOBTree()
         failed_records_tree = root['failed_records']
+
+        # Initialize URL to key mapping tree for O(1) flush lookups
+        if 'url_to_key' not in root:
+            root['url_to_key'] = OOBTree.OOBTree()
+        url_to_key_tree = root['url_to_key']
 
         # Commit initial setup with retry
         def commit_initial():
@@ -810,10 +814,10 @@ def test_api_connection(config=None):
         # Simple test prompt
         test_prompt = "Who are you? Answer briefly."
         print(f"Test Prompt: '{test_prompt}'")
-        
+
         print(f"Starting API connection test...")
         response = None
-        
+
         # Call the corresponding API based on model type
         print(f'DEBUGLINE: config.model_type = {config.model_type}')
         if config.model_type == ModelConfig.OLLAMA:
@@ -829,18 +833,18 @@ def test_api_connection(config=None):
             # Handling for other model types...
             print(f"Unrecognized model type: {config.model_type}, attempting to use DeepSeek API")
             response = call_deepseek_api(test_prompt, config)
-        
+
         # Check response
         if response and isinstance(response, str) and len(response) > 0:
-            print("✅ API connection test successful!")
+            print("API connection test successful!")
             print(f"Model Response: {response[:100]}...")
             return True
         else:
-            print(f"❌ API returned empty or invalid response: {response}")
+            print(f"API returned empty or invalid response: {response}")
             return False
-            
+
     except Exception as e:
-        print(f"❌ API connection test failed: {str(e)}")
+        print(f"API connection test failed: {str(e)}")
         traceback_str = traceback.format_exc()
         print(f"Detailed error information: {traceback_str}")
         return False
@@ -876,17 +880,24 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
 
     # Create a map from URL to bookmark for quick lookup of existing summaries from ZODB
     existing_map = {}
-    for key, bookmark in bookmarks_tree.items():
-        url = bookmark.get('url')
-        if url:
+    for url in url_to_key_tree.keys():
+        key = url_to_key_tree[url]
+        bookmark = bookmarks_tree.get(key)
+        if bookmark:
             existing_map[url] = bookmark
 
     success_count = 0
     skipped_count = 0
     for idx, bookmark in enumerate(tqdm(bookmarks_with_content, desc="Summary Generation Progress")):
         url = bookmark["url"]
-        title = bookmark["title"]
+        title = bookmark.get("title", bookmark.get("name", "No Title"))
         print(f"Generating summary [{idx+1}/{total_count}]: {title} - {url}")
+
+        # Skip bookmarks that failed to crawl (no content) or have errors
+        if "content" not in bookmark or "error" in bookmark:
+            print(f"[{idx+1}/{total_count}] Skipping bookmark without content: {title} - {url}")
+            skipped_count += 1
+            continue
 
         # Check if already processed and has non-empty summary, unless force recompute is enabled
         # This optimization prevents redundant API calls and preserves existing summaries
@@ -917,12 +928,8 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
 
             # Update ZODB bookmark record transactionally
             try:
-                # Find the key for this bookmark in ZODB
-                bookmark_key = None
-                for key, existing_bookmark in bookmarks_tree.items():
-                    if existing_bookmark.get('url') == url:
-                        bookmark_key = key
-                        break
+                # Find the key for this bookmark using O(1) lookup
+                bookmark_key = url_to_key_tree.get(url)
 
                 if bookmark_key is not None:
                     # Update existing record
@@ -931,6 +938,8 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
                     # Add new record with next available key
                     next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
                     bookmarks_tree[next_key] = bookmark
+                    # Update url_to_key_tree for future O(1) lookups
+                    url_to_key_tree[url] = next_key
 
                 # Commit the transaction to persist changes
                 transaction.commit()
@@ -1382,15 +1391,6 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
         def flush_to_disk_sequential(current_bookmarks, current_failed, max_batch_size=50):
             """Flush current bookmarks and failed records to ZODB for sequential processing using batched iterative approach"""
-            global flush_recursion_depth
-            flush_recursion_depth += 1
-
-            # Check for excessive recursion depth
-            if flush_recursion_depth > max_flush_recursion_depth:
-                print(f"Maximum flush recursion depth ({max_flush_recursion_depth}) exceeded. Aborting flush to prevent infinite recursion.")
-                flush_recursion_depth -= 1
-                return  # Return gracefully instead of raising exception
-
             try:
                 # Process bookmarks in smaller batches to prevent recursion issues
                 bookmarks_processed = 0
@@ -1404,22 +1404,16 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                             continue
                         url = bookmark.get('url')
                         if url:
-                            # Check if bookmark already exists (iterative search)
-                            existing_key = None
-                            try:
-                                for key, existing_bookmark in bookmarks_tree.items():
-                                    if existing_bookmark.get('url') == url:
-                                        existing_key = key
-                                        break
-                            except Exception as e:
-                                logger.error(f"Error searching for existing bookmark: {e}")
-                                existing_key = None
+                            # Check if bookmark already exists using O(1) lookup via url_to_key_tree
+                            existing_key = url_to_key_tree.get(url, None)
 
                             if existing_key is not None:
                                 bookmarks_tree[existing_key] = bookmark
                             else:
                                 next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
                                 bookmarks_tree[next_key] = bookmark
+                                # Update url_to_key_tree for future O(1) lookups
+                                url_to_key_tree[url] = next_key
                     bookmarks_processed += len(batch)
 
                     # Commit after each batch to prevent large transactions
@@ -1444,16 +1438,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             except RecursionError as e:
                 print(f"Recursion error during sequential flush: {e}")
                 transaction.abort()
-                # Clear problematic data to prevent infinite retries
-                current_bookmarks.clear()
-                current_failed.clear()
-                raise Exception("Recursion error in flush operation - cleared buffers to prevent infinite loop")
+                # Preserve data integrity - do not clear buffers on RecursionError
+                logger.error(f"RecursionError in flush operation - preserving buffers for data integrity")
             except Exception as e:
                 print(f"Error during sequential periodic flush: {e}")
                 transaction.abort()
                 # Don't clear lists on general errors to allow retry
-            finally:
-                flush_recursion_depth -= 1
 
         start_time = time.time()
         print(f"Starting sequential crawl of bookmark content")
@@ -1591,18 +1581,9 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
         def flush_to_disk(current_bookmarks, current_failed, max_batch_size=50):
             nonlocal flush_in_progress
-            global flush_recursion_depth
-            flush_recursion_depth += 1
-
-            # Check for excessive recursion depth
-            if flush_recursion_depth > max_flush_recursion_depth:
-                print(f"Maximum flush recursion depth ({max_flush_recursion_depth}) exceeded. Aborting flush to prevent infinite recursion.")
-                flush_recursion_depth -= 1
-                return  # Don't raise exception in parallel mode, just return
 
             with flush_flag_lock:
                 if flush_in_progress:
-                    flush_recursion_depth -= 1
                     return  # Prevent overlapping flushes
                 flush_in_progress = True
             try:
@@ -1618,22 +1599,16 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                             continue
                         url = bookmark.get('url')
                         if url:
-                            # Check if bookmark already exists (iterative search)
-                            existing_key = None
-                            try:
-                                for key, existing_bookmark in bookmarks_tree.items():
-                                    if existing_bookmark.get('url') == url:
-                                        existing_key = key
-                                        break
-                            except Exception as e:
-                                logger.error(f"Error searching for existing bookmark: {e}")
-                                existing_key = None
+                            # Check if bookmark already exists using O(1) lookup via url_to_key_tree
+                            existing_key = url_to_key_tree.get(url, None)
 
                             if existing_key is not None:
                                 bookmarks_tree[existing_key] = bookmark
                             else:
                                 next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
                                 bookmarks_tree[next_key] = bookmark
+                                # Update url_to_key_tree for future O(1) lookups
+                                url_to_key_tree[url] = next_key
                     bookmarks_processed += len(batch)
 
                     # Commit after each batch to prevent large transactions
@@ -1660,10 +1635,8 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             except RecursionError as e:
                 print(f"Recursion error during parallel flush: {e}")
                 transaction.abort()
-                # Clear problematic data to prevent infinite retries
-                current_bookmarks.clear()
-                current_failed.clear()
-                # Don't raise exception in parallel mode
+                # Preserve data integrity - do not clear buffers on RecursionError
+                logger.error(f"RecursionError in flush operation - preserving buffers for data integrity")
             except Exception as e:
                 print(f"Error during periodic flush: {e}")
                 transaction.abort()
@@ -1671,7 +1644,6 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             finally:
                 with flush_flag_lock:
                     flush_in_progress = False
-                flush_recursion_depth -= 1
 
         def monitor_thread(bookmarks_with_content, failed_records, last_flush_time_ref):
             while True:
@@ -1916,6 +1888,9 @@ def main():
                 if url:
                     url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
                     url_hashes_tree[url_hash] = True
+                    # Populate URL to key mapping for O(1) flush lookups
+                    # Note: We use the URL itself as key for simplicity, but could use hash if needed
+                    url_to_key_tree[url] = bookmark.get('id', bookmark.get('key', None))
                 content = bookmark.get('content')
                 if content:
                     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
@@ -1927,7 +1902,7 @@ def main():
                 logger.error("Failed to commit deduplication data population")
                 use_fallback = True
             else:
-                print(f"Populated ZODB deduplication trees: {len(url_hashes_tree)} URLs, {len(content_hashes_tree)} content hashes")
+                print(f"Populated ZODB deduplication trees: {len(url_hashes_tree)} URLs, {len(content_hashes_tree)} content hashes, {len(url_to_key_tree)} URL mappings")
         except Exception as e:
             logger.error(f"Error populating deduplication trees: {e}")
             use_fallback = True
@@ -1950,6 +1925,7 @@ def main():
             content_hashes_tree.clear()
             bookmarks_tree.clear()
             failed_records_tree.clear()
+            url_to_key_tree.clear()  # Clear URL to key mapping for rebuild
             # Use retry mechanism for transaction commit
             def commit_clear():
                 transaction.commit()

@@ -41,6 +41,7 @@ import sys
 import signal
 import logging
 import shutil
+import contextlib
 
 # TOML parsing imports with fallback for older Python versions
 try:
@@ -56,6 +57,7 @@ import BTrees.OOBTree as OOBTree
 import BTrees.IOBTree as IOBTree
 import persistent
 import transaction
+import sys
 
 
 # --- Browser Profile Configuration ---
@@ -151,8 +153,21 @@ def retry_transaction_operation(operation_func, max_retries=3, delay=1.0):
     """
     for attempt in range(max_retries + 1):
         try:
+            # Temporarily increase recursion limit for transaction operations
+            original_recursion_limit = sys.getrecursionlimit()
+            with contextlib.suppress():
+                sys.setrecursionlimit(max(original_recursion_limit, 10000))
+
             operation_func()
             return True
+        except RecursionError as e:
+            if attempt < max_retries:
+                logger.warning(f"Transaction operation failed due to recursion (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Transaction operation failed after {max_retries + 1} attempts due to recursion: {e}")
+                return False
         except Exception as e:
             if attempt < max_retries:
                 logger.warning(f"Transaction operation failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s...")
@@ -161,6 +176,10 @@ def retry_transaction_operation(operation_func, max_retries=3, delay=1.0):
             else:
                 logger.error(f"Transaction operation failed after {max_retries + 1} attempts: {e}")
                 return False
+        finally:
+            # Always restore original recursion limit after transaction operations
+            with contextlib.suppress():
+                sys.setrecursionlimit(original_recursion_limit)
     return False
 
 # Initialize ZODB database and persistent structures for on-disk indexing
@@ -178,6 +197,8 @@ def init_zodb():
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
+
+    Increases recursion limit safely to handle deep object persistence during ZODB operations.
     """
     global zodb_db, zodb_connection, url_hashes_tree, content_hashes_tree, bookmarks_tree, failed_records_tree, url_to_key_tree, use_fallback
 
@@ -188,6 +209,15 @@ def init_zodb():
         return
 
     try:
+        # Increase recursion limit safely for ZODB operations to prevent RecursionError
+        # during deep object persistence (e.g., large bookmark content)
+        # Use context manager to limit scope and restore original limit after initialization
+        original_recursion_limit = sys.getrecursionlimit()
+        with contextlib.suppress():
+            # Temporarily increase recursion limit for ZODB initialization
+            # ZODB may recurse deeply when persisting complex objects
+            sys.setrecursionlimit(max(original_recursion_limit, 10000))
+
         # Create FileStorage for persistent storage
         storage = FileStorage(zodb_storage_path)
         zodb_db = DB(storage)
@@ -241,6 +271,10 @@ def init_zodb():
             logger.error(f"Error during ZODB cleanup: {cleanup_e}")
 
         logger.info("Falling back to in-memory structures for data integrity")
+    finally:
+        # Always restore original recursion limit after ZODB operations
+        with contextlib.suppress():
+            sys.setrecursionlimit(original_recursion_limit)
 
 # Safe ZODB operations with error handling
 def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB operation"):
@@ -267,7 +301,23 @@ def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB
         return None
 
     try:
-        return operation_func()
+        # Temporarily increase recursion limit for ZODB operations to handle deep persistence
+        original_recursion_limit = sys.getrecursionlimit()
+        with contextlib.suppress():
+            sys.setrecursionlimit(max(original_recursion_limit, 10000))
+
+        result = operation_func()
+        return result
+    except RecursionError as e:
+        logger.error(f"{operation_name} failed due to recursion limit: {e}")
+        use_fallback = True
+        if fallback_func:
+            try:
+                logger.info(f"Attempting fallback for {operation_name} after recursion error")
+                return fallback_func()
+            except Exception as fallback_e:
+                logger.error(f"Fallback {operation_name} failed: {fallback_e}")
+        return None
     except Exception as e:
         logger.error(f"{operation_name} failed: {e}")
         use_fallback = True
@@ -278,6 +328,10 @@ def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB
             except Exception as fallback_e:
                 logger.error(f"Fallback {operation_name} failed: {fallback_e}")
         return None
+    finally:
+        # Always restore original recursion limit after ZODB operations
+        with contextlib.suppress():
+            sys.setrecursionlimit(original_recursion_limit)
 
 # Cleanup ZODB resources
 def cleanup_zodb():

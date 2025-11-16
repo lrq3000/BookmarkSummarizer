@@ -26,31 +26,26 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from tqdm import tqdm
 
-# ZODB imports for persistent storage
-import ZODB
-from ZODB.FileStorage import FileStorage
-from ZODB.DB import DB
-import BTrees.OOBTree as OOBTree
-import BTrees.IOBTree as IOBTree
-import persistent
-import transaction
+# LMDB imports for persistent storage
+import lmdb
+import json
+import pickle
 
-# ZODB database and persistent structures for on-disk indexing
-# ZODB provides persistent object storage with BTrees for efficient O(1) lookups
+# LMDB database and persistent structures for on-disk indexing
+# LMDB provides memory-mapped database with efficient key-value storage
 # This replaces in-memory sets with disk-based storage for scalability
-zodb_storage_path = os.path.expanduser("./bookmark_index.fs")
-zodb_db = None
-zodb_connection = None
-bookmarks_tree = None  # BTrees.IOBTree for storing bookmarks with integer keys
+lmdb_path = os.path.expanduser("./bookmark_index.lmdb")
+lmdb_env = None
+bookmarks_db = None  # LMDB database for storing bookmarks
 
 # In-memory fallback structures for graceful degradation
 fallback_bookmarks = []
 use_fallback = False
 
-# Check disk space before ZODB operations
+# Check disk space before LMDB operations
 def check_disk_space(min_space_mb=100):
     """
-    Check if there's sufficient disk space for ZODB operations.
+    Check if there's sufficient disk space for LMDB operations.
 
     Parameters:
         min_space_mb (int): Minimum required disk space in MB
@@ -59,17 +54,17 @@ def check_disk_space(min_space_mb=100):
         bool: True if sufficient space, False otherwise
     """
     try:
-        # Get the directory containing the storage file
-        storage_dir = os.path.dirname(os.path.abspath(zodb_storage_path))
-        if not os.path.exists(storage_dir):
+        # Get the directory containing the LMDB database
+        db_dir = os.path.dirname(os.path.abspath(lmdb_path))
+        if not os.path.exists(db_dir):
             # If directory doesn't exist, try to create it
             try:
-                os.makedirs(storage_dir, exist_ok=True)
+                os.makedirs(db_dir, exist_ok=True)
             except Exception as e:
-                print(f"Cannot create storage directory {storage_dir}: {e}")
+                print(f"Cannot create database directory {db_dir}: {e}")
                 return False
         import shutil
-        stat = shutil.disk_usage(storage_dir)
+        stat = shutil.disk_usage(db_dir)
         free_space_mb = stat.free / (1024 * 1024)
         if free_space_mb < min_space_mb:
             print(f"Insufficient disk space: {free_space_mb:.2f} MB free, {min_space_mb} MB required")
@@ -79,68 +74,54 @@ def check_disk_space(min_space_mb=100):
         print(f"Error checking disk space: {e}")
         return False
 
-# Initialize ZODB database and persistent structures for on-disk indexing
-# ZODB uses BTrees for efficient indexing and provides transactional persistence
-def init_zodb():
+# Initialize LMDB database and persistent structures for on-disk indexing
+# LMDB uses memory-mapped database for efficient key-value storage
+def init_lmdb():
     """
-    Initialize ZODB database with persistent BTrees for deduplication and storage.
+    Initialize LMDB database for deduplication and storage.
 
-    This function sets up the ZODB FileStorage and creates persistent BTree structures:
-    - bookmarks_tree: IOBTree for storing bookmarks with integer keys
-
+    This function sets up the LMDB environment and opens the bookmarks database.
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
     """
-    global zodb_db, zodb_connection, bookmarks_tree, use_fallback
+    global lmdb_env, bookmarks_db, use_fallback
 
     # Check disk space first
     if not check_disk_space():
-        print("Insufficient disk space for ZODB initialization. Falling back to in-memory structures.")
+        print("Insufficient disk space for LMDB initialization. Falling back to in-memory structures.")
         use_fallback = True
         return
 
     try:
-        # Create FileStorage for persistent storage
-        storage = FileStorage(zodb_storage_path)
-        zodb_db = DB(storage)
-        zodb_connection = zodb_db.open()
+        # Create LMDB environment
+        lmdb_env = lmdb.open(lmdb_path, map_size=1024*1024*1024, max_dbs=1)  # 1GB map size
 
-        # Get or create root object
-        root = zodb_connection.root()
+        # Open bookmarks database
+        bookmarks_db = lmdb_env.open_db(b'bookmarks')
 
-        # Initialize persistent BTrees if they don't exist
-        if 'bookmarks' not in root:
-            root['bookmarks'] = IOBTree.IOBTree()
-        bookmarks_tree = root['bookmarks']
-
-        # Commit initial setup
-        transaction.commit()
-
-        print(f"Initialized ZODB database at {zodb_storage_path}")
+        print(f"Initialized LMDB database at {lmdb_path}")
 
     except Exception as e:
-        print(f"Error initializing ZODB: {e}")
+        print(f"Error initializing LMDB: {e}")
         use_fallback = True
 
         # Cleanup on failure
         try:
-            if zodb_connection:
-                zodb_connection.close()
-            if zodb_db:
-                zodb_db.close()
+            if lmdb_env:
+                lmdb_env.close()
         except Exception as cleanup_e:
-            print(f"Error during ZODB cleanup: {cleanup_e}")
+            print(f"Error during LMDB cleanup: {cleanup_e}")
 
         print("Falling back to in-memory structures for data integrity")
 
-# Safe ZODB operations with error handling
-def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB operation"):
+# Safe LMDB operations with error handling
+def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation"):
     """
-    Perform a ZODB operation with error handling and fallback support.
+    Perform an LMDB operation with error handling and fallback support.
 
     Parameters:
-        operation_func (callable): Function performing the ZODB operation
-        fallback_func (callable, optional): Fallback function if ZODB fails
+        operation_func (callable): Function performing the LMDB operation
+        fallback_func (callable, optional): Fallback function if LMDB fails
         operation_name (str): Name of the operation for logging
 
     Returns:
@@ -170,26 +151,18 @@ def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB
                 print(f"Fallback {operation_name} failed: {fallback_e}")
         return None
 
-# Cleanup ZODB resources
-def cleanup_zodb():
+# Cleanup LMDB resources
+def cleanup_lmdb():
     """
-    Properly close ZODB connection and database to ensure data integrity.
+    Properly close LMDB environment to ensure data integrity.
     """
-    global zodb_connection, zodb_db
+    global lmdb_env
     try:
-        if zodb_connection:
-            # Try to commit any pending changes
-            transaction.commit()
-            zodb_connection.close()
-        if zodb_db:
-            zodb_db.close()
-        print("ZODB cleanup completed")
+        if lmdb_env:
+            lmdb_env.close()
+        print("LMDB cleanup completed")
     except Exception as e:
-        print(f"Error during ZODB cleanup: {e}")
-        try:
-            transaction.abort()  # Ensure transaction is aborted on error
-        except:
-            pass
+        print(f"Error during LMDB cleanup: {e}")
 
 
 def create_schema():
@@ -241,27 +214,27 @@ def get_or_create_index(index_dir='./whoosh_index', schema=None):
         return index.create_in(index_dir, schema)
 
 
-def load_bookmarks_data(zodb_path='bookmark_index.fs'):
+def load_bookmarks_data(lmdb_path='bookmark_index.lmdb'):
     """
-    Load bookmark data from a ZODB database (.fs file).
+    Load bookmark data from an LMDB database.
 
-    This function loads bookmark data from the ZODB bookmarks_tree, handling cases where
+    This function loads bookmark data from the LMDB bookmarks database, handling cases where
     the database doesn't exist or is corrupted. It yields each bookmark as a dict,
     with preprocessing to generate a unique key and normalize text fields.
 
     Args:
-        zodb_path (str): Path to the ZODB database file.
+        lmdb_path (str): Path to the LMDB database directory.
 
     Yields:
         dict: Preprocessed bookmark dictionary with fields like title, url, content, summary, key.
     """
-    global bookmarks_tree, use_fallback
+    global bookmarks_db, use_fallback
 
-    # Try to load from ZODB first
-    bookmarks_list = safe_zodb_operation(
-        lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+    # Try to load from LMDB first
+    bookmarks_list = safe_lmdb_operation(
+        lambda: load_bookmarks_from_lmdb(),
         lambda: fallback_bookmarks.copy(),
-        "loading bookmarks from ZODB"
+        "loading bookmarks from LMDB"
     )
 
     if bookmarks_list is None:
@@ -271,7 +244,7 @@ def load_bookmarks_data(zodb_path='bookmark_index.fs'):
     total_records = len(bookmarks_list)
 
     if total_records == 0:
-        print("Warning: No bookmarks found in ZODB database. Make sure to run crawl.py first to populate the database.")
+        print("Warning: No bookmarks found in LMDB database. Make sure to run crawl.py first to populate the database.")
         return
 
     for bookmark in bookmarks_list:
@@ -297,6 +270,19 @@ def load_bookmarks_data(zodb_path='bookmark_index.fs'):
             'summary': summary,
             'total_records': total_records  # Include total count for progress tracking
         }
+
+
+def load_bookmarks_from_lmdb():
+    """
+    Helper function to load bookmarks from LMDB within a transaction.
+    """
+    bookmarks = []
+    with lmdb_env.begin(bookmarks_db) as txn:
+        cursor = txn.cursor()
+        for key, value in cursor:
+            bookmark = pickle.loads(value)
+            bookmarks.append(bookmark)
+    return bookmarks
 
 def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=False):
     """
@@ -407,7 +393,7 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
 
     # Close progress bar and show final summary
     pbar.close()
-    print(f"Records parsed from the ZODB database: {processed_count}")
+    print(f"Records parsed from the LMDB database: {processed_count}")
     print(f"Records skipped as duplicates: {skipped_count}")
     print(f"Total bookmarks remaining in index: {existing_count + new_records_count}")
 
@@ -873,14 +859,14 @@ def main():
                          help='Skip updating the index')
     parser.add_argument('--index-dir', type=str, default='./whoosh_index',
                          help='Directory for the Whoosh index (default: ./whoosh_index)')
-    parser.add_argument('--zodb-path', type=str, default='bookmark_index.fs',
-                         help='Path to the ZODB database file (default: bookmark_index.fs)')
+    parser.add_argument('--lmdb-path', type=str, default='bookmark_index.lmdb',
+                          help='Path to the LMDB database directory (default: bookmark_index.lmdb)')
 
     args = parser.parse_args()
 
-    # Initialize ZODB database
-    print("Initializing ZODB database...")
-    init_zodb()
+    # Initialize LMDB database
+    print("Initializing LMDB database...")
+    init_lmdb()
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.
@@ -892,7 +878,7 @@ def main():
                 print("Updating existing index...")
             else:
                 print("Index not found. Loading and indexing bookmarks from ZODB...")
-            bookmarks_gen = load_bookmarks_data(args.zodb_path)
+            bookmarks_gen = load_bookmarks_data(args.lmdb_path)
             index_bookmarks(bookmarks_gen, args.index_dir, update=not args.no_update)
             print("Indexing complete.")
         else:
@@ -910,8 +896,8 @@ def main():
     except Exception as e:
         print(f"Error accessing index for count: {e}")
 
-    # Cleanup ZODB resources before starting server
-    cleanup_zodb()
+    # Cleanup LMDB resources before starting server
+    cleanup_lmdb()
 
     # Launch the FastAPI server using uvicorn
     # The server will be accessible at the specified port

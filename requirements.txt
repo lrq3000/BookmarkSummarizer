@@ -14,7 +14,4 @@ uvicorn[standard]>=0.24.0 # Used to run the FastAPI server
 browser-history
 tomli; python_version < "3.11"  # TOML parser for older Python versions
 youtube-transcript-api>=0.6.2  # For fetching YouTube transcripts
-ZODB>=5.8.0  # Zope Object Database for persistent storage
-BTrees>=4.11.0  # BTree collections for efficient indexing
-persistent>=4.9.0  # Persistent objects for ZODB
-transaction>=3.0.0  # Transaction management for ZODB
+lmdb>=1.4.1  # Lightning Memory-Mapped Database for persistent storage

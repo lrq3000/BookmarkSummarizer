@@ -49,14 +49,9 @@ try:
 except ImportError:
     import tomli as tomllib  # Fallback for older versions
 
-# ZODB imports for persistent storage
-import ZODB
-from ZODB.FileStorage import FileStorage
-from ZODB.DB import DB
-import BTrees.OOBTree as OOBTree
-import BTrees.IOBTree as IOBTree
-import persistent
-import transaction
+# LMDB imports for persistent storage
+import lmdb
+import pickle
 import sys
 
 
@@ -68,17 +63,16 @@ import sys
 bookmarks_path = os.path.expanduser("./bookmarks.json")
 failed_urls_path = os.path.expanduser("./failed_urls.json")
 
-# ZODB database and persistent structures for on-disk indexing
-# ZODB provides persistent object storage with BTrees for efficient O(1) lookups
+# LMDB database and persistent structures for on-disk indexing
+# LMDB provides persistent key-value storage for efficient O(1) lookups
 # This replaces in-memory sets with disk-based storage for scalability
-zodb_storage_path = os.path.expanduser("./bookmark_index.fs")
-zodb_db = None
-zodb_connection = None
-url_hashes_tree = None  # BTrees.OOBTree for URL hash deduplication
-content_hashes_tree = None  # BTrees.OOBTree for content hash deduplication
-bookmarks_tree = None  # BTrees.IOBTree for storing bookmarks with integer keys
-failed_records_tree = None  # BTrees.IOBTree for storing failed records
-url_to_key_tree = None  # BTrees.OOBTree for URL to key mapping (O(1) lookups for flushing)
+lmdb_storage_path = os.path.expanduser("./bookmark_index.lmdb")
+lmdb_env = None
+url_hashes_db = None  # LMDB database for URL hash deduplication
+content_hashes_db = None  # LMDB database for content hash deduplication
+bookmarks_db = None  # LMDB database for storing bookmarks with integer keys
+failed_records_db = None  # LMDB database for storing failed records
+url_to_key_db = None  # LMDB database for URL to key mapping (O(1) lookups for flushing)
 
 content_lock = threading.Lock()
 
@@ -107,10 +101,10 @@ fallback_bookmarks = []
 fallback_failed_records = []
 use_fallback = False
 
-# Check disk space before ZODB operations
+# Check disk space before LMDB operations
 def check_disk_space(min_space_mb=100):
     """
-    Check if there's sufficient disk space for ZODB operations.
+    Check if there's sufficient disk space for LMDB operations.
 
     Parameters:
         min_space_mb (int): Minimum required disk space in MB
@@ -120,7 +114,7 @@ def check_disk_space(min_space_mb=100):
     """
     try:
         # Get the directory containing the storage file
-        storage_dir = os.path.dirname(os.path.abspath(zodb_storage_path))
+        storage_dir = os.path.dirname(os.path.abspath(lmdb_storage_path))
         if not os.path.exists(storage_dir):
             # If directory doesn't exist, try to create it
             try:
@@ -138,152 +132,68 @@ def check_disk_space(min_space_mb=100):
         logger.error(f"Error checking disk space: {e}")
         return False
 
-# Retry mechanism for transaction operations
-def retry_transaction_operation(operation_func, max_retries=3, delay=1.0):
+# LMDB operations are atomic and don't require retry mechanisms like ZODB
+# This function is removed as LMDB handles transactions differently
+
+# Initialize LMDB database and persistent structures for on-disk indexing
+# LMDB uses key-value stores for efficient indexing and provides transactional persistence
+def init_lmdb():
     """
-    Retry a transaction operation with exponential backoff.
+    Initialize LMDB database with persistent key-value stores for deduplication and storage.
 
-    Parameters:
-        operation_func (callable): Function to retry
-        max_retries (int): Maximum number of retries
-        delay (float): Initial delay between retries
-
-    Returns:
-        bool: True if operation succeeded, False otherwise
-    """
-    for attempt in range(max_retries + 1):
-        try:
-            # Temporarily increase recursion limit for transaction operations
-            original_recursion_limit = sys.getrecursionlimit()
-            with contextlib.suppress():
-                sys.setrecursionlimit(max(original_recursion_limit, 10000))
-
-            operation_func()
-            return True
-        except RecursionError as e:
-            if attempt < max_retries:
-                logger.warning(f"Transaction operation failed due to recursion (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                logger.error(f"Transaction operation failed after {max_retries + 1} attempts due to recursion: {e}")
-                return False
-        except Exception as e:
-            if attempt < max_retries:
-                logger.warning(f"Transaction operation failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay}s...")
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                logger.error(f"Transaction operation failed after {max_retries + 1} attempts: {e}")
-                return False
-        finally:
-            # Always restore original recursion limit after transaction operations
-            with contextlib.suppress():
-                sys.setrecursionlimit(original_recursion_limit)
-    return False
-
-# Initialize ZODB database and persistent structures for on-disk indexing
-# ZODB uses BTrees for efficient indexing and provides transactional persistence
-def init_zodb():
-    """
-    Initialize ZODB database with persistent BTrees for deduplication and storage.
-
-    This function sets up the ZODB FileStorage and creates persistent BTree structures:
-    - url_hashes_tree: OOBTree for URL hash deduplication (O(1) lookups)
-    - content_hashes_tree: OOBTree for content hash deduplication (O(1) lookups)
-    - bookmarks_tree: IOBTree for storing bookmarks with integer keys
-    - failed_records_tree: IOBTree for storing failed records with integer keys
-    - url_to_key_tree: OOBTree for URL to key mapping (O(1) lookups for flushing)
+    This function sets up the LMDB environment and creates database structures:
+    - url_hashes_db: LMDB database for URL hash deduplication (O(1) lookups)
+    - content_hashes_db: LMDB database for content hash deduplication (O(1) lookups)
+    - bookmarks_db: LMDB database for storing bookmarks with integer keys
+    - failed_records_db: LMDB database for storing failed records with integer keys
+    - url_to_key_db: LMDB database for URL to key mapping (O(1) lookups for flushing)
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
-
-    Increases recursion limit safely to handle deep object persistence during ZODB operations.
     """
-    global zodb_db, zodb_connection, url_hashes_tree, content_hashes_tree, bookmarks_tree, failed_records_tree, url_to_key_tree, use_fallback
+    global lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, use_fallback
 
     # Check disk space first
     if not check_disk_space():
-        logger.error("Insufficient disk space for ZODB initialization. Falling back to in-memory structures.")
+        logger.error("Insufficient disk space for LMDB initialization. Falling back to in-memory structures.")
         use_fallback = True
         return
 
     try:
-        # Increase recursion limit safely for ZODB operations to prevent RecursionError
-        # during deep object persistence (e.g., large bookmark content)
-        # Use context manager to limit scope and restore original limit after initialization
-        original_recursion_limit = sys.getrecursionlimit()
-        with contextlib.suppress():
-            # Temporarily increase recursion limit for ZODB initialization
-            # ZODB may recurse deeply when persisting complex objects
-            sys.setrecursionlimit(max(original_recursion_limit, 10000))
+        # Create LMDB environment with reasonable size limits
+        # map_size is set to 1GB, can be adjusted based on needs
+        lmdb_env = lmdb.open(lmdb_storage_path, map_size=1024*1024*1024, max_dbs=5)
 
-        # Create FileStorage for persistent storage
-        storage = FileStorage(zodb_storage_path)
-        zodb_db = DB(storage)
-        zodb_connection = zodb_db.open()
+        # Open named databases
+        url_hashes_db = lmdb_env.open_db(b'url_hashes')
+        content_hashes_db = lmdb_env.open_db(b'content_hashes')
+        bookmarks_db = lmdb_env.open_db(b'bookmarks')
+        failed_records_db = lmdb_env.open_db(b'failed_records')
+        url_to_key_db = lmdb_env.open_db(b'url_to_key')
 
-        # Get or create root object
-        root = zodb_connection.root()
-
-        # Initialize persistent BTrees if they don't exist
-        if 'url_hashes' not in root:
-            root['url_hashes'] = OOBTree.OOBTree()
-        url_hashes_tree = root['url_hashes']
-
-        if 'content_hashes' not in root:
-            root['content_hashes'] = OOBTree.OOBTree()
-        content_hashes_tree = root['content_hashes']
-
-        if 'bookmarks' not in root:
-            root['bookmarks'] = IOBTree.IOBTree()
-        bookmarks_tree = root['bookmarks']
-
-        if 'failed_records' not in root:
-            root['failed_records'] = IOBTree.IOBTree()
-        failed_records_tree = root['failed_records']
-
-        # Initialize URL to key mapping tree for O(1) flush lookups
-        if 'url_to_key' not in root:
-            root['url_to_key'] = OOBTree.OOBTree()
-        url_to_key_tree = root['url_to_key']
-
-        # Commit initial setup with retry
-        def commit_initial():
-            transaction.commit()
-
-        if not retry_transaction_operation(commit_initial):
-            raise Exception("Failed to commit initial ZODB setup after retries")
-
-        logger.info(f"Initialized ZODB database at {zodb_storage_path}")
+        logger.info(f"Initialized LMDB database at {lmdb_storage_path}")
 
     except Exception as e:
-        logger.error(f"Error initializing ZODB: {e}")
+        logger.error(f"Error initializing LMDB: {e}")
         use_fallback = True
 
         # Cleanup on failure
         try:
-            if zodb_connection:
-                zodb_connection.close()
-            if zodb_db:
-                zodb_db.close()
+            if lmdb_env:
+                lmdb_env.close()
         except Exception as cleanup_e:
-            logger.error(f"Error during ZODB cleanup: {cleanup_e}")
+            logger.error(f"Error during LMDB cleanup: {cleanup_e}")
 
         logger.info("Falling back to in-memory structures for data integrity")
-    finally:
-        # Always restore original recursion limit after ZODB operations
-        with contextlib.suppress():
-            sys.setrecursionlimit(original_recursion_limit)
 
-# Safe ZODB operations with error handling
-def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB operation"):
+# Safe LMDB operations with error handling
+def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation"):
     """
-    Perform a ZODB operation with error handling and fallback support.
+    Perform an LMDB operation with error handling and fallback support.
 
     Parameters:
-        operation_func (callable): Function performing the ZODB operation
-        fallback_func (callable, optional): Fallback function if ZODB fails
+        operation_func (callable): Function performing the LMDB operation
+        fallback_func (callable, optional): Fallback function if LMDB fails
         operation_name (str): Name of the operation for logging
 
     Returns:
@@ -301,23 +211,8 @@ def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB
         return None
 
     try:
-        # Temporarily increase recursion limit for ZODB operations to handle deep persistence
-        original_recursion_limit = sys.getrecursionlimit()
-        with contextlib.suppress():
-            sys.setrecursionlimit(max(original_recursion_limit, 10000))
-
         result = operation_func()
         return result
-    except RecursionError as e:
-        logger.error(f"{operation_name} failed due to recursion limit: {e}")
-        use_fallback = True
-        if fallback_func:
-            try:
-                logger.info(f"Attempting fallback for {operation_name} after recursion error")
-                return fallback_func()
-            except Exception as fallback_e:
-                logger.error(f"Fallback {operation_name} failed: {fallback_e}")
-        return None
     except Exception as e:
         logger.error(f"{operation_name} failed: {e}")
         use_fallback = True
@@ -328,37 +223,19 @@ def safe_zodb_operation(operation_func, fallback_func=None, operation_name="ZODB
             except Exception as fallback_e:
                 logger.error(f"Fallback {operation_name} failed: {fallback_e}")
         return None
-    finally:
-        # Always restore original recursion limit after ZODB operations
-        with contextlib.suppress():
-            sys.setrecursionlimit(original_recursion_limit)
 
-# Cleanup ZODB resources
-def cleanup_zodb():
+# Cleanup LMDB resources
+def cleanup_lmdb():
     """
-    Properly close ZODB connection and database to ensure data integrity.
+    Properly close LMDB environment to ensure data integrity.
     """
-    global zodb_connection, zodb_db
+    global lmdb_env
     try:
-        if zodb_connection:
-            # Try to commit any pending changes with retry
-            def commit_pending():
-                transaction.commit()
-
-            if not retry_transaction_operation(commit_pending):
-                logger.warning("Failed to commit pending changes during cleanup")
-                transaction.abort()  # Abort if commit fails
-
-            zodb_connection.close()
-        if zodb_db:
-            zodb_db.close()
-        logger.info("ZODB cleanup completed")
+        if lmdb_env:
+            lmdb_env.close()
+        logger.info("LMDB cleanup completed")
     except Exception as e:
-        logger.error(f"Error during ZODB cleanup: {e}")
-        try:
-            transaction.abort()  # Ensure transaction is aborted on error
-        except:
-            pass
+        logger.error(f"Error during LMDB cleanup: {e}")
 
 # Load custom parsers from custom_parsers/ directory
 def load_custom_parsers():
@@ -407,12 +284,12 @@ def load_custom_parsers():
 def signal_handler(signum, frame):
     """
     Handle KeyboardInterrupt (CTRL-C) signal for graceful shutdown.
-    Sets the global shutdown flag, cleans up ZODB resources, and prints a shutdown message.
+    Sets the global shutdown flag, cleans up LMDB resources, and prints a shutdown message.
     """
     global shutdown_flag
     print("\nReceived KeyboardInterrupt (CTRL-C). Initiating graceful shutdown...")
     shutdown_flag = True
-    cleanup_zodb()
+    cleanup_lmdb()
 
 # Load TOML configuration
 def load_config(config_path="default_config.toml"):
@@ -903,12 +780,12 @@ def test_api_connection(config=None):
         print(f"Detailed error information: {traceback_str}")
         return False
 
-# Generate summaries for bookmarks stored in ZODB
+# Generate summaries for bookmarks stored in LMDB
 def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, force_recompute=False):
     """
-    Generates summaries for bookmark content stored in ZODB.
+    Generates summaries for bookmark content stored in LMDB.
 
-    This function iterates through the ZODB bookmarks tree and generates AI-powered summaries
+    This function iterates through the LMDB bookmarks database and generates AI-powered summaries
     using the configured language model. By default, it skips bookmarks that already have a non-empty
     "summary" field to avoid redundant API calls and preserve existing summaries. The force_recompute
     parameter allows overriding this behavior to regenerate all summaries, which is useful for updating
@@ -932,13 +809,17 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
     if force_recompute:
         print("Force recompute mode enabled: regenerating all summaries regardless of existing ones.")
 
-    # Create a map from URL to bookmark for quick lookup of existing summaries from ZODB
+    # Create a map from URL to bookmark for quick lookup of existing summaries from LMDB
     existing_map = {}
-    for url in url_to_key_tree.keys():
-        key = url_to_key_tree[url]
-        bookmark = bookmarks_tree.get(key)
-        if bookmark:
-            existing_map[url] = bookmark
+    with lmdb_env.begin() as txn:
+        cursor = txn.cursor(url_to_key_db)
+        for url_bytes, key_bytes in cursor:
+            url = url_bytes.decode('utf-8')
+            key = int.from_bytes(key_bytes, 'big')
+            bookmark_bytes = txn.get(key.to_bytes(4, 'big'), db=bookmarks_db)
+            if bookmark_bytes:
+                bookmark = pickle.loads(bookmark_bytes)
+                existing_map[url] = bookmark
 
     success_count = 0
     skipped_count = 0
@@ -980,27 +861,30 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
             success_count += 1
             print(f"{progress_info} Summary generated successfully")
 
-            # Update ZODB bookmark record transactionally
+            # Update LMDB bookmark record transactionally
             try:
-                # Find the key for this bookmark using O(1) lookup
-                bookmark_key = url_to_key_tree.get(url)
+                with lmdb_env.begin(write=True) as txn:
+                    # Find the key for this bookmark using O(1) lookup
+                    key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
 
-                if bookmark_key is not None:
-                    # Update existing record
-                    bookmarks_tree[bookmark_key] = bookmark
-                else:
-                    # Add new record with next available key
-                    next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
-                    bookmarks_tree[next_key] = bookmark
-                    # Update url_to_key_tree for future O(1) lookups
-                    url_to_key_tree[url] = next_key
+                    if key_bytes is not None:
+                        # Update existing record
+                        key = int.from_bytes(key_bytes, 'big')
+                        txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                    else:
+                        # Add new record with next available key
+                        cursor = txn.cursor(bookmarks_db)
+                        if cursor.last():
+                            next_key = int.from_bytes(cursor.key(), 'big') + 1
+                        else:
+                            next_key = 1
+                        txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                        # Update url_to_key_db for future O(1) lookups
+                        txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
 
-                # Commit the transaction to persist changes
-                transaction.commit()
-                print(f"{progress_info} Current progress saved to ZODB")
+                print(f"{progress_info} Current progress saved to LMDB")
             except Exception as e:
-                print(f"{progress_info} Error saving to ZODB: {str(e)}")
-                transaction.abort()  # Rollback on error
+                print(f"{progress_info} Error saving to LMDB: {str(e)}")
         else:
             print(f"{progress_info} Summary generation failed: {summary}")
 
@@ -1011,8 +895,14 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
     if not force_recompute:
         print(f"Skipped {skipped_count} bookmarks with existing summaries.")
 
-    # Return bookmarks as list from ZODB for compatibility
-    return list(bookmarks_tree.values())
+    # Return bookmarks as list from LMDB for compatibility
+    bookmarks_list = []
+    with lmdb_env.begin() as txn:
+        cursor = txn.cursor(bookmarks_db)
+        for key_bytes, bookmark_bytes in cursor:
+            bookmark = pickle.loads(bookmark_bytes)
+            bookmarks_list.append(bookmark)
+    return bookmarks_list
 
 # Fetch bookmarks using browser_history module
 def get_bookmarks(browser=None, profile_path=None):
@@ -1392,22 +1282,17 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
         failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
         return None, failed_info
             
-    # Check for content deduplication using ZODB BTree (transactional)
+    # Check for content deduplication using LMDB (transactional)
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
     print(f"{progress_info} DEBUG: Generated content hash: {content_hash[:16]}... for URL: {url}")
     with content_lock:
         try:
-            if content_hash in content_hashes_tree:
-                print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
-                return None, None  # Skip saving, but not a failure
-            print(f"{progress_info} DEBUG: Content hash not found in tree, adding: {content_hash[:16]}...")
-            content_hashes_tree[content_hash] = True
-            # Use retry mechanism for transaction commit
-            def commit_dedup():
-                transaction.commit()
-            if not retry_transaction_operation(commit_dedup):
-                logger.error(f"Failed to commit content deduplication for {url}")
-                return None, None
+            with lmdb_env.begin(write=True) as txn:
+                if txn.get(content_hash.encode('utf-8'), db=content_hashes_db):
+                    print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
+                    return None, None  # Skip saving, but not a failure
+                print(f"{progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
+                txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
         except Exception as e:
             logger.error(f"Error during content deduplication check: {e}")
             if use_fallback:
@@ -1444,59 +1329,60 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         last_flush_time = time.time()
 
         def flush_to_disk_sequential(current_bookmarks, current_failed, max_batch_size=50):
-            """Flush current bookmarks and failed records to ZODB for sequential processing using batched iterative approach"""
+            """Flush current bookmarks and failed records to LMDB for sequential processing using batched iterative approach"""
             try:
-                # Process bookmarks in smaller batches to prevent recursion issues
+                # Process bookmarks in smaller batches
                 bookmarks_processed = 0
                 failed_processed = 0
 
                 # Batch process bookmarks
                 for i in range(0, len(current_bookmarks), max_batch_size):
                     batch = current_bookmarks[i:i + max_batch_size]
-                    for bookmark in batch:
-                        if bookmark is None:
-                            continue
-                        url = bookmark.get('url')
-                        if url:
-                            # Check if bookmark already exists using O(1) lookup via url_to_key_tree
-                            existing_key = url_to_key_tree.get(url, None)
+                    with lmdb_env.begin(write=True) as txn:
+                        for bookmark in batch:
+                            if bookmark is None:
+                                continue
+                            url = bookmark.get('url')
+                            if url:
+                                # Check if bookmark already exists using O(1) lookup via url_to_key_db
+                                key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
 
-                            if existing_key is not None:
-                                bookmarks_tree[existing_key] = bookmark
-                            else:
-                                next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
-                                bookmarks_tree[next_key] = bookmark
-                                # Update url_to_key_tree for future O(1) lookups
-                                url_to_key_tree[url] = next_key
-                    bookmarks_processed += len(batch)
-
-                    # Commit after each batch to prevent large transactions
-                    transaction.commit()
-                    print(f"Committed batch of {len(batch)} bookmarks to ZODB")
+                                if key_bytes is not None:
+                                    key = int.from_bytes(key_bytes, 'big')
+                                    txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                else:
+                                    # Find next available key
+                                    cursor = txn.cursor(bookmarks_db)
+                                    if cursor.last():
+                                        next_key = int.from_bytes(cursor.key(), 'big') + 1
+                                    else:
+                                        next_key = 1
+                                    txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    # Update url_to_key_db for future O(1) lookups
+                                    txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
+                        bookmarks_processed += len(batch)
+                        print(f"Committed batch of {len(batch)} bookmarks to LMDB")
 
                 # Batch process failed records
                 for i in range(0, len(current_failed), max_batch_size):
                     batch = current_failed[i:i + max_batch_size]
-                    for failed_record in batch:
-                        next_key = max(failed_records_tree.keys()) + 1 if failed_records_tree else 1
-                        failed_records_tree[next_key] = failed_record
-                    failed_processed += len(batch)
+                    with lmdb_env.begin(write=True) as txn:
+                        for failed_record in batch:
+                            # Find next available key
+                            cursor = txn.cursor(failed_records_db)
+                            if cursor.last():
+                                next_key = int.from_bytes(cursor.key(), 'big') + 1
+                            else:
+                                next_key = 1
+                            txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(failed_record), db=failed_records_db)
+                        failed_processed += len(batch)
+                        print(f"Committed batch of {len(batch)} failed records to LMDB")
 
-                    # Commit after each batch
-                    transaction.commit()
-                    print(f"Committed batch of {len(batch)} failed records to ZODB")
-
-                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to ZODB in batches")
+                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to LMDB in batches")
 
                 # Note: Do not clear lists in sequential mode to maintain return values
-            except RecursionError as e:
-                print(f"Recursion error during sequential flush: {e}")
-                transaction.abort()
-                # Preserve data integrity - do not clear buffers on RecursionError
-                logger.error(f"RecursionError in flush operation - preserving buffers for data integrity")
             except Exception as e:
                 print(f"Error during sequential periodic flush: {e}")
-                transaction.abort()
                 # Don't clear lists on general errors to allow retry
 
         start_time = time.time()
@@ -1516,20 +1402,15 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             url = bookmark['url']
             url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
             try:
-                if url_hash in url_hashes_tree:
-                    title = bookmark.get("name", "No Title")
-                    try:
-                        print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
-                    except UnicodeEncodeError:
-                        print(f"Skipping duplicate URL [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
-                    continue  # Skip duplicates without counting towards limit
-                url_hashes_tree[url_hash] = True
-                # Use retry mechanism for transaction commit
-                def commit_url_dedup():
-                    transaction.commit()
-                if not retry_transaction_operation(commit_url_dedup):
-                    logger.error(f"Failed to commit URL deduplication for {url}")
-                    continue
+                with lmdb_env.begin(write=True) as txn:
+                    if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                        title = bookmark.get("name", "No Title")
+                        try:
+                            print(f"Skipping duplicate URL [{idx+1}]: {title} - {url}")
+                        except UnicodeEncodeError:
+                            print(f"Skipping duplicate URL [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                        continue  # Skip duplicates without counting towards limit
+                    txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
             except Exception as e:
                 logger.error(f"Error during URL deduplication check: {e}")
                 if use_fallback:
@@ -1641,59 +1522,60 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     return  # Prevent overlapping flushes
                 flush_in_progress = True
             try:
-                # Process bookmarks and failed records in smaller batches to prevent recursion issues
+                # Process bookmarks and failed records in smaller batches
                 bookmarks_processed = 0
                 failed_processed = 0
 
                 # Batch process bookmarks
                 for i in range(0, len(current_bookmarks), max_batch_size):
                     batch = current_bookmarks[i:i + max_batch_size]
-                    for bookmark in batch:
-                        if bookmark is None:
-                            continue
-                        url = bookmark.get('url')
-                        if url:
-                            # Check if bookmark already exists using O(1) lookup via url_to_key_tree
-                            existing_key = url_to_key_tree.get(url, None)
+                    with lmdb_env.begin(write=True) as txn:
+                        for bookmark in batch:
+                            if bookmark is None:
+                                continue
+                            url = bookmark.get('url')
+                            if url:
+                                # Check if bookmark already exists using O(1) lookup via url_to_key_db
+                                key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
 
-                            if existing_key is not None:
-                                bookmarks_tree[existing_key] = bookmark
-                            else:
-                                next_key = max(bookmarks_tree.keys()) + 1 if bookmarks_tree else 1
-                                bookmarks_tree[next_key] = bookmark
-                                # Update url_to_key_tree for future O(1) lookups
-                                url_to_key_tree[url] = next_key
-                    bookmarks_processed += len(batch)
-
-                    # Commit after each batch to prevent large transactions
-                    transaction.commit()
-                    print(f"Committed batch of {len(batch)} bookmarks to ZODB")
+                                if key_bytes is not None:
+                                    key = int.from_bytes(key_bytes, 'big')
+                                    txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                else:
+                                    # Find next available key
+                                    cursor = txn.cursor(bookmarks_db)
+                                    if cursor.last():
+                                        next_key = int.from_bytes(cursor.key(), 'big') + 1
+                                    else:
+                                        next_key = 1
+                                    txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    # Update url_to_key_db for future O(1) lookups
+                                    txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
+                        bookmarks_processed += len(batch)
+                        print(f"Committed batch of {len(batch)} bookmarks to LMDB")
 
                 # Batch process failed records
                 for i in range(0, len(current_failed), max_batch_size):
                     batch = current_failed[i:i + max_batch_size]
-                    for failed_record in batch:
-                        next_key = max(failed_records_tree.keys()) + 1 if failed_records_tree else 1
-                        failed_records_tree[next_key] = failed_record
-                    failed_processed += len(batch)
+                    with lmdb_env.begin(write=True) as txn:
+                        for failed_record in batch:
+                            # Find next available key
+                            cursor = txn.cursor(failed_records_db)
+                            if cursor.last():
+                                next_key = int.from_bytes(cursor.key(), 'big') + 1
+                            else:
+                                next_key = 1
+                            txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(failed_record), db=failed_records_db)
+                        failed_processed += len(batch)
+                        print(f"Committed batch of {len(batch)} failed records to LMDB")
 
-                    # Commit after each batch
-                    transaction.commit()
-                    print(f"Committed batch of {len(batch)} failed records to ZODB")
-
-                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to ZODB in batches")
+                print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to LMDB in batches")
 
                 # Clear the current lists after successful flush
                 current_bookmarks.clear()
                 current_failed.clear()
-            except RecursionError as e:
-                print(f"Recursion error during parallel flush: {e}")
-                transaction.abort()
-                # Preserve data integrity - do not clear buffers on RecursionError
-                logger.error(f"RecursionError in flush operation - preserving buffers for data integrity")
             except Exception as e:
                 print(f"Error during periodic flush: {e}")
-                transaction.abort()
                 # Don't clear lists on general errors to allow retry
             finally:
                 with flush_flag_lock:
@@ -1741,18 +1623,13 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 url = bookmark['url']
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
                 try:
-                    if url_hash in url_hashes_tree:
-                        title = bookmark.get("name", "No Title")
-                        print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
-                        skipped_url_count += 1
-                        continue
-                    url_hashes_tree[url_hash] = True
-                    # Use retry mechanism for transaction commit
-                    def commit_url_dedup_parallel():
-                        transaction.commit()
-                    if not retry_transaction_operation(commit_url_dedup_parallel):
-                        logger.error(f"Failed to commit URL deduplication for {url}")
-                        continue
+                    with lmdb_env.begin(write=True) as txn:
+                        if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                            title = bookmark.get("name", "No Title")
+                            print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
+                            skipped_url_count += 1
+                            continue
+                        txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
                 except Exception as e:
                     logger.error(f"Error during URL deduplication check: {e}")
                     if use_fallback:
@@ -1899,7 +1776,7 @@ def parse_args():
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
     # Declare global variables used in this function
-    global use_fallback
+    global use_fallback, lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db
 
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -1920,45 +1797,44 @@ def main():
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
     flush_interval = args.flush_interval  # Interval for flushing to disk
 
-    # Initialize ZODB for persistent storage
-    init_zodb()
+    # Initialize LMDB for persistent storage
+    init_lmdb()
 
-    # Load existing bookmarks from ZODB if not rebuilding from scratch
+    # Load existing bookmarks from LMDB if not rebuilding from scratch
     existing_bookmarks = []
     if not args.rebuild:
-        existing_bookmarks = safe_zodb_operation(
-            lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+        existing_bookmarks = safe_lmdb_operation(
+            lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)] if lmdb_env is not None else [],
             lambda: fallback_bookmarks.copy(),
             "loading existing bookmarks"
         )
         if existing_bookmarks is None:
             existing_bookmarks = []
-        print(f"Loaded {len(existing_bookmarks)} existing bookmarks from ZODB")
+        print(f"Loaded {len(existing_bookmarks)} existing bookmarks from LMDB")
 
-        # Populate ZODB deduplication trees with existing data
+        # Populate LMDB deduplication databases with existing data
         try:
-            for bookmark in existing_bookmarks:
-                url = bookmark.get('url')
-                if url:
-                    url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                    url_hashes_tree[url_hash] = True
-                    # Populate URL to key mapping for O(1) flush lookups
-                    # Note: We use the URL itself as key for simplicity, but could use hash if needed
-                    url_to_key_tree[url] = bookmark.get('id', bookmark.get('key', None))
-                content = bookmark.get('content')
-                if content:
-                    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-                    content_hashes_tree[content_hash] = True
-            # Use retry mechanism for transaction commit
-            def commit_dedup_data():
-                transaction.commit()
-            if not retry_transaction_operation(commit_dedup_data):
-                logger.error("Failed to commit deduplication data population")
-                use_fallback = True
-            else:
-                print(f"Populated ZODB deduplication trees: {len(url_hashes_tree)} URLs, {len(content_hashes_tree)} content hashes, {len(url_to_key_tree)} URL mappings")
+            with lmdb_env.begin(write=True) as txn:
+                for bookmark in existing_bookmarks:
+                    url = bookmark.get('url')
+                    if url:
+                        url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                        txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
+                        # Populate URL to key mapping for O(1) flush lookups
+                        # Note: We use the URL itself as key for simplicity, but could use hash if needed
+                        # Find the key for this bookmark
+                        cursor = txn.cursor(bookmarks_db)
+                        for key_bytes, bookmark_bytes in cursor:
+                            if pickle.loads(bookmark_bytes) == bookmark:
+                                txn.put(url.encode('utf-8'), key_bytes, db=url_to_key_db)
+                                break
+                    content = bookmark.get('content')
+                    if content:
+                        content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                        txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
+            print(f"Populated LMDB deduplication databases: URLs, content hashes, URL mappings")
         except Exception as e:
-            logger.error(f"Error populating deduplication trees: {e}")
+            logger.error(f"Error populating deduplication databases: {e}")
             use_fallback = True
             # Populate fallback structures
             for bookmark in existing_bookmarks:
@@ -1973,23 +1849,23 @@ def main():
             print(f"Populated fallback deduplication structures: {len(fallback_url_hashes)} URLs, {len(fallback_content_hashes)} content hashes")
     else:
         print("Rebuilding from scratch (--rebuild flag used)")
-        # Clear existing deduplication trees for rebuild
+        # Clear existing deduplication databases for rebuild
         try:
-            url_hashes_tree.clear()
-            content_hashes_tree.clear()
-            bookmarks_tree.clear()
-            failed_records_tree.clear()
-            url_to_key_tree.clear()  # Clear URL to key mapping for rebuild
-            # Use retry mechanism for transaction commit
-            def commit_clear():
-                transaction.commit()
-            if not retry_transaction_operation(commit_clear):
-                logger.error("Failed to commit ZODB tree clearing for rebuild")
-                use_fallback = True
-            else:
-                print("Cleared existing ZODB trees for rebuild")
+            with lmdb_env.begin(write=True) as txn:
+                txn.drop(url_hashes_db)
+                txn.drop(content_hashes_db)
+                txn.drop(bookmarks_db)
+                txn.drop(failed_records_db)
+                txn.drop(url_to_key_db)
+            # Re-open databases after clearing
+            url_hashes_db = lmdb_env.open_db(b'url_hashes')
+            content_hashes_db = lmdb_env.open_db(b'content_hashes')
+            bookmarks_db = lmdb_env.open_db(b'bookmarks')
+            failed_records_db = lmdb_env.open_db(b'failed_records')
+            url_to_key_db = lmdb_env.open_db(b'url_to_key')
+            print("Cleared existing LMDB databases for rebuild")
         except Exception as e:
-            logger.error(f"Error clearing ZODB trees for rebuild: {e}")
+            logger.error(f"Error clearing LMDB databases for rebuild: {e}")
             use_fallback = True
             # Clear fallback structures
             fallback_url_hashes.clear()
@@ -1998,12 +1874,12 @@ def main():
             fallback_failed_records.clear()
             print("Cleared fallback structures for rebuild")
 
-    # If the --from-json argument is used, read directly from ZODB and generate summaries
+    # If the --from-json argument is used, read directly from LMDB and generate summaries
     if args.from_json:
-        print("Generating summaries from existing bookmarks in ZODB...")
+        print("Generating summaries from existing bookmarks in LMDB...")
         try:
-            bookmarks_with_content = safe_zodb_operation(
-                lambda: list(bookmarks_tree.values()) if bookmarks_tree is not None else [],
+            bookmarks_with_content = safe_lmdb_operation(
+                lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)] if lmdb_env is not None else [],
                 lambda: fallback_bookmarks.copy(),
                 "loading bookmarks for summary generation"
             )
@@ -2011,7 +1887,7 @@ def main():
                 bookmarks_with_content = []
 
             if not bookmarks_with_content:
-                print("Error: ZODB bookmarks tree is empty")
+                print("Error: LMDB bookmarks database is empty")
                 return
 
             if bookmark_limit > 0:
@@ -2029,11 +1905,11 @@ def main():
             # Generate summaries for content, respecting the force recompute flag
             bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
 
-            print(f"Summary generation complete, ZODB updated with {len(bookmarks_with_content)} bookmarks")
+            print(f"Summary generation complete, LMDB updated with {len(bookmarks_with_content)} bookmarks")
             return
 
         except Exception as e:
-            print(f"Error processing ZODB data: {str(e)}")
+            print(f"Error processing LMDB data: {str(e)}")
             return
 
     # Original crawling logic
@@ -2056,16 +1932,17 @@ def main():
             bookmark["type"] == "url" and
             bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
             not re.match(r"https?://10\.0\.", url)):
-            # If not rebuilding, skip URLs already in ZODB bookmarks
+            # If not rebuilding, skip URLs already in LMDB bookmarks
             if not args.rebuild:
                 url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
                 try:
-                    if url_hash in url_hashes_tree:
-                        try:
-                            print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
-                        except UnicodeEncodeError:
-                            print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
-                        continue
+                    with lmdb_env.begin() as txn:
+                        if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                            try:
+                                print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
+                            except UnicodeEncodeError:
+                                print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
+                            continue
                 except Exception as e:
                     logger.error(f"Error checking URL deduplication: {e}")
                     if use_fallback and url_hash in fallback_url_hashes:
@@ -2104,30 +1981,26 @@ def main():
     elif not generate_summary_flag:
         print("Skipping summary generation step based on configuration...")
 
-    # All bookmarks are already stored in ZODB via periodic flushes
-    # Just ensure final commit and provide summary
+    # All bookmarks are already stored in LMDB via periodic flushes
+    # Just ensure final consistency and provide summary
     try:
-        def final_commit():
-            transaction.commit()
-        if not retry_transaction_operation(final_commit):
-            logger.error("Failed to perform final transaction commit")
-        bookmarks_with_content = safe_zodb_operation(
-            lambda: list(bookmarks_tree.values()),
+        bookmarks_with_content = safe_lmdb_operation(
+            lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)],
             lambda: fallback_bookmarks.copy(),
             "retrieving final bookmarks list"
         )
         if bookmarks_with_content is None:
             bookmarks_with_content = []
-        print(f"ZODB contains {len(bookmarks_with_content)} total bookmarks")
+        print(f"LMDB contains {len(bookmarks_with_content)} total bookmarks")
     except Exception as e:
-        logger.error(f"Error during final commit and summary: {e}")
+        logger.error(f"Error during final summary: {e}")
         bookmarks_with_content = fallback_bookmarks.copy() if use_fallback else []
         print(f"Fallback contains {len(bookmarks_with_content)} total bookmarks")
 
     # Save failed URLs and reasons (keeping JSON format for compatibility)
     try:
-        failed_records_list = safe_zodb_operation(
-            lambda: list(failed_records_tree.values()),
+        failed_records_list = safe_lmdb_operation(
+            lambda: [pickle.loads(record_bytes) for key_bytes, record_bytes in lmdb_env.begin().cursor(failed_records_db)],
             lambda: fallback_failed_records.copy(),
             "retrieving failed records list"
         )
@@ -2145,7 +2018,7 @@ def main():
             logger.error(f"Error saving fallback failed URLs: {fallback_e}")
     
     print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
-    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {zodb_storage_path}")
+    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {lmdb_storage_path}")
     print(f"Skipped {skipped_url_count} duplicate URLs during crawling")
     print(f"Failed to crawl {len(failed_records)} URLs, details saved to {failed_urls_path}")
     
@@ -2178,14 +2051,14 @@ def main():
     elif use_fallback:
         print("Using fallback mode - statistics not available")
 
-    # Cleanup ZODB resources
-    cleanup_zodb()
+    # Cleanup LMDB resources
+    cleanup_lmdb()
 
     # Log final status
     if use_fallback:
-        logger.warning("Script completed using fallback in-memory structures due to ZODB issues")
+        logger.warning("Script completed using fallback in-memory structures due to LMDB issues")
     else:
-        logger.info("Script completed successfully with ZODB persistence")
+        logger.info("Script completed successfully with LMDB persistence")
 
 # This function is redundant as its logic is mostly covered by fetch_with_selenium, 
 # but it was present in the original file. I will translate it and keep it for completeness, 

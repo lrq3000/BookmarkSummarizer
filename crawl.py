@@ -43,6 +43,18 @@ import logging
 import shutil
 import contextlib
 
+# Platform-specific imports for file locking
+try:
+    import fcntl  # Unix-like systems
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+    try:
+        import msvcrt  # Windows
+        HAS_MSVC = True
+    except ImportError:
+        HAS_MSVC = False
+
 # TOML parsing imports with fallback for older Python versions
 try:
     import tomllib  # Python 3.11+
@@ -73,6 +85,14 @@ content_hashes_db = None  # LMDB database for content hash deduplication
 bookmarks_db = None  # LMDB database for storing bookmarks with integer keys
 failed_records_db = None  # LMDB database for storing failed records
 url_to_key_db = None  # LMDB database for URL to key mapping (O(1) lookups for flushing)
+
+# LMDB configuration defaults
+DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
+DEFAULT_LMDB_MAX_DBS = 5
+
+# Backup configuration defaults
+BACKUP_BASE_DIR = os.path.expanduser("./backups")
+BACKUP_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 
 content_lock = threading.Lock()
 
@@ -132,12 +152,234 @@ def check_disk_space(min_space_mb=100):
         logger.error(f"Error checking disk space: {e}")
         return False
 
+# Check if LMDB database exists and contains data
+def check_lmdb_database_exists_and_has_data():
+    """
+    Check if the LMDB database file exists and contains any data.
+
+    Returns:
+        tuple: (exists, has_data, data_count)
+            - exists (bool): True if database file exists
+            - has_data (bool): True if database contains any bookmarks
+            - data_count (int): Number of bookmarks in database (0 if no data)
+    """
+    try:
+        # Check if the LMDB directory exists
+        if not os.path.exists(lmdb_storage_path):
+            logger.info(f"LMDB database directory does not exist: {lmdb_storage_path}")
+            return False, False, 0
+
+        # Check if data.mdb file exists (main LMDB data file)
+        data_file = os.path.join(lmdb_storage_path, 'data.mdb')
+        if not os.path.exists(data_file):
+            logger.info(f"LMDB data file does not exist: {data_file}")
+            return False, False, 0
+
+        # Try to open database in read-only mode to check for data
+        try:
+            env = lmdb.open(lmdb_storage_path, readonly=True, max_dbs=5)
+            try:
+                # Check bookmarks database specifically
+                bookmarks_db_check = env.open_db(b'bookmarks')
+                with env.begin() as txn:
+                    cursor = txn.cursor(bookmarks_db_check)
+                    count = sum(1 for _ in cursor)
+                env.close()
+                has_data = count > 0
+                logger.info(f"LMDB database exists with {count} bookmarks")
+                return True, has_data, count
+            except Exception as e:
+                logger.warning(f"Error checking LMDB data: {e}")
+                env.close()
+                return True, False, 0
+        except Exception as e:
+            logger.warning(f"Error opening LMDB database for check: {e}")
+            return True, False, 0
+
+    except Exception as e:
+        logger.error(f"Error checking LMDB database existence: {e}")
+        return False, False, 0
+
+# Create timestamped backup of LMDB database
+def create_lmdb_backup(operation_name="pre_write_backup"):
+    """
+    Create a timestamped backup of the LMDB database before write operations.
+
+    This function creates a backup in a separate directory with clear naming convention:
+    backups/lmdb_backup_YYYYMMDD_HHMMSS_<operation_name>/
+
+    Parameters:
+        operation_name (str): Descriptive name for the operation triggering the backup
+
+    Returns:
+        tuple: (success, backup_path)
+            - success (bool): True if backup was created successfully
+            - backup_path (str): Path to the backup directory, or None if failed
+    """
+    try:
+        # Check if database exists and has data
+        exists, has_data, data_count = check_lmdb_database_exists_and_has_data()
+        if not exists or not has_data:
+            logger.info(f"No backup needed: database exists={exists}, has_data={has_data}, data_count={data_count}")
+            return True, None  # Not an error, just nothing to backup
+
+        # Create backup directory structure
+        timestamp = datetime.datetime.now().strftime(BACKUP_TIMESTAMP_FORMAT)
+        backup_dir_name = f"lmdb_backup_{timestamp}_{operation_name}"
+        backup_path = os.path.join(BACKUP_BASE_DIR, backup_dir_name)
+
+        # Ensure backup base directory exists
+        os.makedirs(backup_path, exist_ok=True)
+
+        logger.info(f"Creating LMDB backup: {backup_path}")
+
+        # For concurrent access safety, use platform-specific file locking during backup
+        lock_file = os.path.join(lmdb_storage_path, 'backup.lock')
+
+        # Close any existing LMDB environment to ensure clean copy
+        global lmdb_env
+        env_was_open = lmdb_env is not None
+        if env_was_open:
+            try:
+                lmdb_env.close()
+                lmdb_env = None
+                logger.debug("Temporarily closed LMDB environment for backup")
+            except Exception as e:
+                logger.warning(f"Error closing LMDB environment for backup: {e}")
+
+        try:
+            # Acquire file lock to prevent concurrent access during backup
+            with open(lock_file, 'w') as lock_f:
+                lock_acquired = False
+                try:
+                    if HAS_FCNTL:
+                        # Unix-like systems
+                        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # Non-blocking exclusive lock
+                        lock_acquired = True
+                    elif HAS_MSVC:
+                        # Windows systems
+                        # For Windows, we'll use a simpler approach since msvcrt locking is more complex
+                        # Just check if another process has the file open
+                        try:
+                            msvcrt.locking(lock_f.fileno(), msvcrt.LK_NBLCK, 1)
+                            lock_acquired = True
+                        except OSError:
+                            lock_acquired = False
+                    else:
+                        # Fallback: no locking available
+                        logger.warning("No file locking mechanism available, proceeding without lock")
+                        lock_acquired = True
+
+                    if not lock_acquired:
+                        logger.warning("Could not acquire backup lock (another backup in progress), skipping backup")
+                        return True, None  # Not a failure, just concurrent access
+
+                    logger.debug("Acquired backup lock for concurrent access safety")
+
+                    # Copy all LMDB files
+                    import glob
+                    lmdb_files = glob.glob(os.path.join(lmdb_storage_path, "*"))
+                    for src_file in lmdb_files:
+                        if os.path.isfile(src_file) and not src_file.endswith('.lock'):  # Skip lock files
+                            filename = os.path.basename(src_file)
+                            dst_file = os.path.join(backup_path, filename)
+                            shutil.copy2(src_file, dst_file)
+                            logger.debug(f"Backed up file: {filename}")
+
+                    # Verify backup integrity by checking file sizes
+                    original_size = sum(os.path.getsize(f) for f in lmdb_files if os.path.isfile(f) and not f.endswith('.lock'))
+                    backup_size = sum(os.path.getsize(os.path.join(backup_path, os.path.basename(f)))
+                                    for f in lmdb_files if os.path.isfile(f) and not f.endswith('.lock'))
+
+                    if backup_size != original_size:
+                        logger.warning(f"Backup size mismatch: original={original_size}, backup={backup_size}")
+                    else:
+                        logger.info(f"Backup created successfully: {backup_path} ({backup_size} bytes)")
+
+                    return True, backup_path
+
+                finally:
+                    # Release lock
+                    try:
+                        if lock_acquired:
+                            if HAS_FCNTL:
+                                fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                            elif HAS_MSVC:
+                                try:
+                                    msvcrt.locking(lock_f.fileno(), msvcrt.LK_UNLCK, 1)
+                                except OSError:
+                                    pass  # Ignore unlock errors
+                            logger.debug("Released backup lock")
+                    except Exception as e:
+                        logger.warning(f"Error releasing backup lock: {e}")
+
+        finally:
+            # Clean up lock file
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+            except Exception as e:
+                logger.warning(f"Error cleaning up lock file: {e}")
+
+            # Re-open LMDB environment if it was previously open
+            if env_was_open:
+                try:
+                    init_lmdb()
+                    logger.debug("Re-opened LMDB environment after backup")
+                except Exception as e:
+                    logger.error(f"Error re-opening LMDB environment after backup: {e}")
+                    # This is serious, but we'll continue with the backup success
+
+    except Exception as e:
+        logger.error(f"Error creating LMDB backup: {e}")
+        return False, None
+
+# Safe backup operation with graceful failure handling
+def safe_backup_operation(operation_name="pre_write_backup", continue_on_failure=True):
+    """
+    Perform backup operation with graceful failure handling.
+
+    Parameters:
+        operation_name (str): Descriptive name for the operation
+        continue_on_failure (bool): If True, continue execution even if backup fails
+
+    Returns:
+        bool: True if backup succeeded or was not needed, False only if backup failed critically
+    """
+    try:
+        logger.info(f"Starting backup operation: {operation_name}")
+        success, backup_path = create_lmdb_backup(operation_name)
+
+        if success:
+            if backup_path:
+                logger.info(f"Backup completed successfully: {backup_path}")
+            else:
+                logger.info("Backup skipped (no data to backup)")
+            return True
+        else:
+            logger.error(f"Backup operation '{operation_name}' failed")
+            if continue_on_failure:
+                logger.warning("Continuing execution despite backup failure")
+                return True
+            else:
+                logger.error("Stopping execution due to backup failure")
+                return False
+
+    except Exception as e:
+        logger.error(f"Unexpected error during backup operation '{operation_name}': {e}")
+        if continue_on_failure:
+            logger.warning("Continuing execution despite backup error")
+            return True
+        else:
+            logger.error("Stopping execution due to backup error")
+            return False
+
 # LMDB operations are atomic and don't require retry mechanisms like ZODB
 # This function is removed as LMDB handles transactions differently
 
 # Initialize LMDB database and persistent structures for on-disk indexing
 # LMDB uses key-value stores for efficient indexing and provides transactional persistence
-def init_lmdb():
+def init_lmdb(map_size=None, max_dbs=None, readonly=False):
     """
     Initialize LMDB database with persistent key-value stores for deduplication and storage.
 
@@ -150,19 +392,29 @@ def init_lmdb():
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
+
+    Parameters:
+        map_size (int, optional): Size of the memory map in bytes. Defaults to 1GB.
+        max_dbs (int, optional): Maximum number of named databases. Defaults to 5.
+        readonly (bool, optional): Open database in read-only mode. Defaults to False.
     """
     global lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, use_fallback
 
-    # Check disk space first
-    if not check_disk_space():
+    # Use defaults if not specified
+    if map_size is None:
+        map_size = DEFAULT_LMDB_MAP_SIZE
+    if max_dbs is None:
+        max_dbs = DEFAULT_LMDB_MAX_DBS
+
+    # Check disk space first (skip for readonly mode)
+    if not readonly and not check_disk_space():
         logger.error("Insufficient disk space for LMDB initialization. Falling back to in-memory structures.")
         use_fallback = True
         return
 
     try:
-        # Create LMDB environment with reasonable size limits
-        # map_size is set to 1GB, can be adjusted based on needs
-        lmdb_env = lmdb.open(lmdb_storage_path, map_size=1024*1024*1024, max_dbs=5)
+        # Create LMDB environment with configurable size limits
+        lmdb_env = lmdb.open(lmdb_storage_path, map_size=map_size, max_dbs=max_dbs, readonly=readonly)
 
         # Open named databases
         url_hashes_db = lmdb_env.open_db(b'url_hashes')
@@ -171,8 +423,26 @@ def init_lmdb():
         failed_records_db = lmdb_env.open_db(b'failed_records')
         url_to_key_db = lmdb_env.open_db(b'url_to_key')
 
-        logger.info(f"Initialized LMDB database at {lmdb_storage_path}")
+        logger.info(f"Initialized LMDB database at {lmdb_storage_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
 
+    except lmdb.MapFullError as e:
+        logger.error(f"LMDB MapFullError: Database map size {map_size} is too small. Consider increasing map_size.")
+        use_fallback = True
+    except lmdb.MapResizedError as e:
+        logger.error(f"LMDB MapResizedError: Database was resized by another process. Try reopening.")
+        use_fallback = True
+    except lmdb.DiskError as e:
+        logger.error(f"LMDB DiskError: Disk I/O error occurred: {e}")
+        use_fallback = True
+    except lmdb.InvalidError as e:
+        logger.error(f"LMDB InvalidError: Invalid parameter or corrupted database: {e}")
+        use_fallback = True
+    except lmdb.VersionMismatchError as e:
+        logger.error(f"LMDB VersionMismatchError: LMDB version mismatch: {e}")
+        use_fallback = True
+    except lmdb.BadRslotError as e:
+        logger.error(f"LMDB BadRslotError: Reader slot corruption detected: {e}")
+        use_fallback = True
     except Exception as e:
         logger.error(f"Error initializing LMDB: {e}")
         use_fallback = True
@@ -186,15 +456,16 @@ def init_lmdb():
 
         logger.info("Falling back to in-memory structures for data integrity")
 
-# Safe LMDB operations with error handling
-def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation"):
+# Safe LMDB operations with error handling and transaction management
+def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation", readonly=False):
     """
-    Perform an LMDB operation with error handling and fallback support.
+    Perform an LMDB operation with error handling, transaction management, and fallback support.
 
     Parameters:
         operation_func (callable): Function performing the LMDB operation
         fallback_func (callable, optional): Fallback function if LMDB fails
         operation_name (str): Name of the operation for logging
+        readonly (bool): Whether this is a read-only operation
 
     Returns:
         Any: Result of the operation or fallback
@@ -211,18 +482,43 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
         return None
 
     try:
-        result = operation_func()
+        # Execute operation with proper transaction scoping
+        with lmdb_env.begin(write=not readonly) as txn:
+            result = operation_func(txn)
         return result
+    except lmdb.MapFullError as e:
+        logger.error(f"LMDB MapFullError during {operation_name}: Database map is full. Consider increasing map_size.")
+        use_fallback = True
+    except lmdb.MapResizedError as e:
+        logger.error(f"LMDB MapResizedError during {operation_name}: Database was resized by another process.")
+        use_fallback = True
+    except lmdb.DiskError as e:
+        logger.error(f"LMDB DiskError during {operation_name}: Disk I/O error: {e}")
+        use_fallback = True
+    except lmdb.InvalidError as e:
+        logger.error(f"LMDB InvalidError during {operation_name}: Invalid parameter or corrupted data: {e}")
+        use_fallback = True
+    except lmdb.BadTxnError as e:
+        logger.error(f"LMDB BadTxnError during {operation_name}: Transaction error: {e}")
+        use_fallback = True
+    except lmdb.BadRslotError as e:
+        logger.error(f"LMDB BadRslotError during {operation_name}: Reader slot corruption: {e}")
+        use_fallback = True
+    except lmdb.BadValsizeError as e:
+        logger.error(f"LMDB BadValsizeError during {operation_name}: Value too large: {e}")
+        use_fallback = True
     except Exception as e:
         logger.error(f"{operation_name} failed: {e}")
         use_fallback = True
-        if fallback_func:
-            try:
-                logger.info(f"Attempting fallback for {operation_name}")
-                return fallback_func()
-            except Exception as fallback_e:
-                logger.error(f"Fallback {operation_name} failed: {fallback_e}")
-        return None
+
+    # Attempt fallback if operation failed
+    if fallback_func:
+        try:
+            logger.info(f"Attempting fallback for {operation_name}")
+            return fallback_func()
+        except Exception as fallback_e:
+            logger.error(f"Fallback {operation_name} failed: {fallback_e}")
+    return None
 
 # Cleanup LMDB resources
 def cleanup_lmdb():
@@ -1287,15 +1583,21 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
     print(f"{progress_info} DEBUG: Generated content hash: {content_hash[:16]}... for URL: {url}")
     with content_lock:
-        try:
-            with lmdb_env.begin(write=True) as txn:
-                if txn.get(content_hash.encode('utf-8'), db=content_hashes_db):
-                    print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
-                    return None, None  # Skip saving, but not a failure
-                print(f"{progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
-                txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
-        except Exception as e:
-            logger.error(f"Error during content deduplication check: {e}")
+        def check_content_deduplication(txn):
+            if txn.get(content_hash.encode('utf-8'), db=content_hashes_db):
+                print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
+                return True  # Duplicate found
+            print(f"{progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
+            txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
+            return False  # No duplicate
+
+        is_duplicate = safe_lmdb_operation(
+            check_content_deduplication,
+            lambda: content_hash in fallback_content_hashes,
+            "content deduplication check"
+        )
+
+        if is_duplicate:
             if use_fallback:
                 # Use fallback in-memory check
                 if content_hash in fallback_content_hashes:
@@ -1772,6 +2074,47 @@ def parse_args():
         action='store_true',
         help='Skip saving unreachable bookmarks. When not provided, unreachable bookmarks are saved with an "error" field containing the error message.'
     )
+
+    # Add LMDB configuration arguments
+    parser.add_argument(
+        '--lmdb-map-size',
+        type=int,
+        help=f'Size of LMDB memory map in bytes (default: {DEFAULT_LMDB_MAP_SIZE})'
+    )
+    parser.add_argument(
+        '--lmdb-max-dbs',
+        type=int,
+        help=f'Maximum number of LMDB named databases (default: {DEFAULT_LMDB_MAX_DBS})'
+    )
+    parser.add_argument(
+        '--lmdb-readonly',
+        action='store_true',
+        help='Open LMDB database in read-only mode for concurrent access'
+    )
+
+    # Add backup control arguments
+    parser.add_argument(
+        '--enable-backup',
+        action='store_true',
+        help='Enable automatic LMDB database backup before write operations (default: enabled)'
+    )
+    parser.add_argument(
+        '--disable-backup',
+        action='store_true',
+        help='Disable automatic LMDB database backup before write operations'
+    )
+    parser.add_argument(
+        '--backup-dir',
+        type=str,
+        default=BACKUP_BASE_DIR,
+        help=f'Directory for LMDB backups (default: {BACKUP_BASE_DIR})'
+    )
+    parser.add_argument(
+        '--backup-on-failure-stop',
+        action='store_true',
+        help='Stop execution if backup fails instead of continuing (default: continue on failure)'
+    )
+
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -1798,8 +2141,21 @@ def main():
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
     flush_interval = args.flush_interval  # Interval for flushing to disk
 
-    # Initialize LMDB for persistent storage
-    init_lmdb()
+    # Initialize LMDB for persistent storage with configurable settings
+    # Command-line arguments take precedence over environment variables
+    lmdb_map_size = args.lmdb_map_size or int(os.environ.get('LMDB_MAP_SIZE', DEFAULT_LMDB_MAP_SIZE))
+    lmdb_max_dbs = args.lmdb_max_dbs or int(os.environ.get('LMDB_MAX_DBS', DEFAULT_LMDB_MAX_DBS))
+    lmdb_readonly = args.lmdb_readonly or bool(os.environ.get('LMDB_READONLY', False))
+
+    # Configure backup settings
+    global BACKUP_BASE_DIR
+    BACKUP_BASE_DIR = args.backup_dir
+    enable_backup = not args.disable_backup  # Default to enabled unless explicitly disabled
+    if args.enable_backup:
+        enable_backup = True  # Explicitly enabled
+    backup_continue_on_failure = not args.backup_on_failure_stop
+
+    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly)
 
     # Load existing bookmarks from LMDB if not rebuilding from scratch
     existing_bookmarks = []
@@ -1812,6 +2168,12 @@ def main():
         if existing_bookmarks is None:
             existing_bookmarks = []
         print(f"Loaded {len(existing_bookmarks)} existing bookmarks from LMDB")
+
+        # Backup before any write operations if enabled
+        if enable_backup and existing_bookmarks:
+            if not safe_backup_operation("pre_crawl_backup", backup_continue_on_failure):
+                print("Backup failed and configured to stop on failure. Exiting.")
+                return
 
         # Populate LMDB deduplication databases with existing data
         try:
@@ -1878,6 +2240,13 @@ def main():
     # If the --from-json argument is used, read directly from LMDB and generate summaries
     if args.from_json:
         print("Generating summaries from existing bookmarks in LMDB...")
+
+        # Backup before summary generation write operations if enabled
+        if enable_backup:
+            if not safe_backup_operation("pre_summary_generation_backup", backup_continue_on_failure):
+                print("Backup failed and configured to stop on failure. Exiting.")
+                return
+
         try:
             bookmarks_with_content = safe_lmdb_operation(
                 lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)] if lmdb_env is not None else [],
@@ -1920,6 +2289,10 @@ def main():
     print(f"  - Bookmark Limit: {bookmark_limit if bookmark_limit > 0 else 'No Limit'}")
     print(f"  - Parallel Workers: {max_workers}")
     print(f"  - Generate Summary: {'Yes' if generate_summary_flag else 'No'}")
+    print(f"  - LMDB Backup: {'Enabled' if enable_backup else 'Disabled'}")
+    if enable_backup:
+        print(f"  - Backup Directory: {BACKUP_BASE_DIR}")
+        print(f"  - Stop on Backup Failure: {'Yes' if not backup_continue_on_failure else 'No'}")
 
     # Get bookmark data
     bookmarks = get_bookmarks(browser=args.browser, profile_path=args.profile_path)
@@ -2055,7 +2428,19 @@ def main():
     # Cleanup LMDB resources
     cleanup_lmdb()
 
-    # Log final status
+    # Log final status and backup summary
+    if enable_backup:
+        logger.info("LMDB backup functionality was enabled during this run")
+        # Count existing backups
+        try:
+            if os.path.exists(BACKUP_BASE_DIR):
+                backup_count = len([d for d in os.listdir(BACKUP_BASE_DIR) if os.path.isdir(os.path.join(BACKUP_BASE_DIR, d)) and d.startswith('lmdb_backup_')])
+                logger.info(f"Total LMDB backups available: {backup_count}")
+        except Exception as e:
+            logger.warning(f"Could not count existing backups: {e}")
+    else:
+        logger.info("LMDB backup functionality was disabled for this run")
+
     if use_fallback:
         logger.warning("Script completed using fallback in-memory structures due to LMDB issues")
     else:

@@ -38,6 +38,10 @@ lmdb_path = os.path.expanduser("./bookmark_index.lmdb")
 lmdb_env = None
 bookmarks_db = None  # LMDB database for storing bookmarks
 
+# LMDB configuration defaults
+DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
+DEFAULT_LMDB_MAX_DBS = 1
+
 # In-memory fallback structures for graceful degradation
 fallback_bookmarks = []
 use_fallback = False
@@ -76,31 +80,60 @@ def check_disk_space(min_space_mb=100):
 
 # Initialize LMDB database and persistent structures for on-disk indexing
 # LMDB uses memory-mapped database for efficient key-value storage
-def init_lmdb():
+def init_lmdb(map_size=None, max_dbs=None, readonly=False):
     """
     Initialize LMDB database for deduplication and storage.
 
     This function sets up the LMDB environment and opens the bookmarks database.
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
+
+    Parameters:
+        map_size (int, optional): Size of the memory map in bytes. Defaults to 1GB.
+        max_dbs (int, optional): Maximum number of named databases. Defaults to 1.
+        readonly (bool, optional): Open database in read-only mode. Defaults to False.
     """
     global lmdb_env, bookmarks_db, use_fallback
 
-    # Check disk space first
-    if not check_disk_space():
+    # Use defaults if not specified
+    if map_size is None:
+        map_size = DEFAULT_LMDB_MAP_SIZE
+    if max_dbs is None:
+        max_dbs = DEFAULT_LMDB_MAX_DBS
+
+    # Check disk space first (skip for readonly mode)
+    if not readonly and not check_disk_space():
         print("Insufficient disk space for LMDB initialization. Falling back to in-memory structures.")
         use_fallback = True
         return
 
     try:
-        # Create LMDB environment
-        lmdb_env = lmdb.open(lmdb_path, map_size=1024*1024*1024, max_dbs=1)  # 1GB map size
+        # Create LMDB environment with configurable size limits
+        lmdb_env = lmdb.open(lmdb_path, map_size=map_size, max_dbs=max_dbs, readonly=readonly)
 
         # Open bookmarks database
         bookmarks_db = lmdb_env.open_db(b'bookmarks')
 
-        print(f"Initialized LMDB database at {lmdb_path}")
+        print(f"Initialized LMDB database at {lmdb_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
 
+    except lmdb.MapFullError as e:
+        print(f"LMDB MapFullError: Database map size {map_size} is too small. Consider increasing map_size.")
+        use_fallback = True
+    except lmdb.MapResizedError as e:
+        print(f"LMDB MapResizedError: Database was resized by another process. Try reopening.")
+        use_fallback = True
+    except lmdb.DiskError as e:
+        print(f"LMDB DiskError: Disk I/O error occurred: {e}")
+        use_fallback = True
+    except lmdb.InvalidError as e:
+        print(f"LMDB InvalidError: Invalid parameter or corrupted database: {e}")
+        use_fallback = True
+    except lmdb.VersionMismatchError as e:
+        print(f"LMDB VersionMismatchError: LMDB version mismatch: {e}")
+        use_fallback = True
+    except lmdb.BadRslotError as e:
+        print(f"LMDB BadRslotError: Reader slot corruption detected: {e}")
+        use_fallback = True
     except Exception as e:
         print(f"Error initializing LMDB: {e}")
         use_fallback = True
@@ -114,15 +147,16 @@ def init_lmdb():
 
         print("Falling back to in-memory structures for data integrity")
 
-# Safe LMDB operations with error handling
-def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation"):
+# Safe LMDB operations with error handling and transaction management
+def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation", readonly=False):
     """
-    Perform an LMDB operation with error handling and fallback support.
+    Perform an LMDB operation with error handling, transaction management, and fallback support.
 
     Parameters:
         operation_func (callable): Function performing the LMDB operation
         fallback_func (callable, optional): Fallback function if LMDB fails
         operation_name (str): Name of the operation for logging
+        readonly (bool): Whether this is a read-only operation
 
     Returns:
         Any: Result of the operation or fallback
@@ -139,17 +173,43 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
         return None
 
     try:
-        return operation_func()
+        # Execute operation with proper transaction scoping
+        with lmdb_env.begin(write=not readonly) as txn:
+            result = operation_func(txn)
+        return result
+    except lmdb.MapFullError as e:
+        print(f"LMDB MapFullError during {operation_name}: Database map is full. Consider increasing map_size.")
+        use_fallback = True
+    except lmdb.MapResizedError as e:
+        print(f"LMDB MapResizedError during {operation_name}: Database was resized by another process.")
+        use_fallback = True
+    except lmdb.DiskError as e:
+        print(f"LMDB DiskError during {operation_name}: Disk I/O error: {e}")
+        use_fallback = True
+    except lmdb.InvalidError as e:
+        print(f"LMDB InvalidError during {operation_name}: Invalid parameter or corrupted data: {e}")
+        use_fallback = True
+    except lmdb.BadTxnError as e:
+        print(f"LMDB BadTxnError during {operation_name}: Transaction error: {e}")
+        use_fallback = True
+    except lmdb.BadRslotError as e:
+        print(f"LMDB BadRslotError during {operation_name}: Reader slot corruption: {e}")
+        use_fallback = True
+    except lmdb.BadValSizeError as e:
+        print(f"LMDB BadValSizeError during {operation_name}: Value too large: {e}")
+        use_fallback = True
     except Exception as e:
         print(f"{operation_name} failed: {e}")
         use_fallback = True
-        if fallback_func:
-            try:
-                print(f"Attempting fallback for {operation_name}")
-                return fallback_func()
-            except Exception as fallback_e:
-                print(f"Fallback {operation_name} failed: {fallback_e}")
-        return None
+
+    # Attempt fallback if operation failed
+    if fallback_func:
+        try:
+            print(f"Attempting fallback for {operation_name}")
+            return fallback_func()
+        except Exception as fallback_e:
+            print(f"Fallback {operation_name} failed: {fallback_e}")
+    return None
 
 # Cleanup LMDB resources
 def cleanup_lmdb():
@@ -277,12 +337,14 @@ def load_bookmarks_from_lmdb():
     Helper function to load bookmarks from LMDB within a transaction.
     """
     bookmarks = []
-    with lmdb_env.begin(bookmarks_db) as txn:
+    def load_operation(txn):
         cursor = txn.cursor()
         for key, value in cursor:
             bookmark = pickle.loads(value)
             bookmarks.append(bookmark)
-    return bookmarks
+        return bookmarks
+
+    return safe_lmdb_operation(load_operation, lambda: fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)
 
 def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=False):
     """
@@ -861,12 +923,23 @@ def main():
                          help='Directory for the Whoosh index (default: ./whoosh_index)')
     parser.add_argument('--lmdb-path', type=str, default='bookmark_index.lmdb',
                           help='Path to the LMDB database directory (default: bookmark_index.lmdb)')
+    parser.add_argument('--lmdb-map-size', type=int,
+                          help=f'Size of LMDB memory map in bytes (default: {DEFAULT_LMDB_MAP_SIZE})')
+    parser.add_argument('--lmdb-max-dbs', type=int,
+                          help=f'Maximum number of LMDB named databases (default: {DEFAULT_LMDB_MAX_DBS})')
+    parser.add_argument('--lmdb-readonly', action='store_true',
+                          help='Open LMDB database in read-only mode for concurrent access')
 
     args = parser.parse_args()
 
-    # Initialize LMDB database
+    # Initialize LMDB database with configurable settings
+    # Command-line arguments take precedence over environment variables
+    lmdb_map_size = args.lmdb_map_size or int(os.environ.get('LMDB_MAP_SIZE', DEFAULT_LMDB_MAP_SIZE))
+    lmdb_max_dbs = args.lmdb_max_dbs or int(os.environ.get('LMDB_MAX_DBS', DEFAULT_LMDB_MAX_DBS))
+    lmdb_readonly = args.lmdb_readonly or bool(os.environ.get('LMDB_READONLY', False))
+
     print("Initializing LMDB database...")
-    init_lmdb()
+    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly)
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.

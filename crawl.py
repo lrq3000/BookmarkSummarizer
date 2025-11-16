@@ -1691,7 +1691,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         # Force final flush after all processing is complete
         with bookmarks_lock:
             if bookmarks_with_content or failed_records:
-                print("Performing final flush to ZODB...")
+                print("Performing final flush to LMDB...")
                 try:
                     flush_to_disk(bookmarks_with_content, failed_records)
                     print("Final flush complete.")
@@ -2033,7 +2033,7 @@ def main():
         for idx, record in enumerate(fallback_failed_records):
             print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
     
-    # Display content length statistics from ZODB
+    # Display content length statistics from LMDB
     if bookmarks_with_content:
         try:
             total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)

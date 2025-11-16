@@ -877,7 +877,7 @@ def main():
             if not args.no_update and index.exists_in(args.index_dir):
                 print("Updating existing index...")
             else:
-                print("Index not found. Loading and indexing bookmarks from ZODB...")
+                print("Creating new index...")
             bookmarks_gen = load_bookmarks_data(args.lmdb_path)
             index_bookmarks(bookmarks_gen, args.index_dir, update=not args.no_update)
             print("Indexing complete.")

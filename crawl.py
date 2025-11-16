@@ -384,7 +384,7 @@ def generate_summary(title, content, url, config=None):
             content = content[:max_content_length] + "..."
         
         # Construct a more detailed prompt
-        prompt = f"""Generate only a comprehensive, informative summary (approx. 500 words) for the following webpage content. Begin directly with the summary text. Do not include any introductory phrases such as “Here is a summary” or similar.
+        prompt = f"""Generate only a comprehensive, informative summary (approx. 500 words) for the following webpage content. Begin directly with the summary content, produce no introductory phrases or meta-statements of any kind, such as “Here is a summary of”, "**Summary:**" or any other variant.
 
 Webpage Title: {title}
 Webpage URL: {url}
@@ -406,6 +406,7 @@ Summary Requirements:
 11. Ensure high information density for easy vector retrieval matching.
 12. Output only the summary text. Do not add any explanations, comments, or meta statements before or after the summary
 13. Be concise, straight-to-the-point, and avoid unnecessary filler words, write in a note taking kind of way, without conjunctive words, only keep information dense words.
+14. Never account nor mention that "JavaScript is disabled in your browser" in the summary, this is not a content but an error.
 
 Please generate an information-dense, clearly structured summary, optimized for a text format suitable for vector retrieval, minimizing filler words, unnecessary repetition, and words like: 'okay', 'um', etc.
 """

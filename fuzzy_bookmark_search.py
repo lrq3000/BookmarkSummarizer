@@ -310,7 +310,7 @@ def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=Fals
 
     writer = ix.writer()
 
-    batch_size = 1000  # Process in batches to manage memory
+    batch_size = 2000  # Process in batches to manage memory
     batch = []
     processed_keys = set()
     skipped_count = 0

@@ -2061,60 +2061,6 @@ def main():
     else:
         logger.info("Script completed successfully with LMDB persistence")
 
-# This function is redundant as its logic is mostly covered by fetch_with_selenium, 
-# but it was present in the original file. I will translate it and keep it for completeness, 
-# but it is not called in main().
-def fetch_zhihu_content(url, current_idx=None, total_count=None, title="No Title"):
-    """Specifically handles Zhihu links"""
-    progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
-    
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    # Add a more realistic user agent
-    options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36')
-    
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    
-    try:
-        print(f"{progress_info} Using dedicated method to crawl Zhihu content: {title} - {url}")
-        driver.get(url)
-        # Wait for page to load
-        time.sleep(3)
-        
-        # Detect and close login pop-up
-        try:
-            # Note: find_element_by_css_selector is deprecated, but keeping the original logic structure
-            login_close = driver.find_element("css selector", '.Modal-closeButton')
-            login_close.click()
-            print(f"{progress_info} Successfully closed Zhihu login pop-up")
-            time.sleep(1)
-        except Exception as e:
-            print(f"{progress_info} Failed to close Zhihu login pop-up or no need to close: {title} - {str(e)}")
-        
-        # Get page content
-        content = driver.page_source
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # Extract main content
-        article = soup.select_one('.Post-RichText') or soup.select_one('.RichText')
-        if article:
-            result = article.get_text()
-            print(f"{progress_info} Successfully extracted Zhihu article content: {title}, length: {len(result)} characters")
-            return result
-        else:
-            result = soup.get_text()
-            print(f"{progress_info} Zhihu article body not found, using full text: {title}, length: {len(result)} characters")
-            return result
-    
-    except Exception as e:
-        print(f"{progress_info} Zhihu crawl exception: {title} - {url} - {str(e)}")
-        return None
-    finally:
-        driver.quit()
 
 if __name__ == "__main__":
     main()

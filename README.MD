@@ -135,7 +135,6 @@ python crawl.py --from-json
 ```
 Generates summaries for existing `bookmarks_with_content.json` without re-crawling.
 
-
 #### Search Through Bookmarks
 
 Once your bookmarks are crawled, a `bookmarks_with_content.json` file will be present in the current folder. Then you can search through it with a fuzzy search engine:
@@ -154,10 +153,11 @@ Uses the existing index without rebuilding it.
 
 #### Output Files
 
-- `bookmarks.json`: Filtered bookmark list from browsers
-- `bookmarks_with_content.json`: Bookmark data with crawled content and AI-generated summaries
-- `failed_urls.json`: URLs that failed to crawl with reasons
-- `whoosh_index/`: Directory containing the Whoosh search index files
+- `bookmarks.json`: Filtered bookmark list from browsers, it is just a compilation of all bookmarks fetched directly from the browsers.
+- `bookmark_index.lmdb`: Folder of bookmark data with crawled content and AI-generated summaries stored in a LMDB.
+- `failed_urls.json`: URLs that failed to crawl with reasons.
+- `crawl_errors.log`: Errors log for the crawler, this logs all errors even if not related to the unreachability of bookmarks' contents (eg, this logs software logic bugs).
+- `whoosh_index/`: Directory containing the Whoosh search index files for the seach engine.
 
 ## 📋 Detailed Features
 
@@ -167,6 +167,7 @@ BookmarkSummarizer automatically reads all bookmarks from the Chrome bookmarks f
 
 1. **Regular Crawling**: Uses the Requests library to capture content from most web pages
 2. **Dynamic Content Crawling**: For dynamic webpages (such as Zhihu and other platforms), automatically switches to Selenium
+3. **Modular architecture with custom parsers** : For specific websites or content such as YouTube, custom parsers / adapters can be implemented in `custom_parsers/` as separate `.py` modules that will be automatically called to filter and process every bookmarks. The custom parsers get a full copy of the bookmark's metadata and can choose to filter based on any criterion, not only the URL, but content based or title based, etc. For example, for YouTube, the transcript is downloaded to be the content for summarization.
 
 ### Summary Generation
 
@@ -176,6 +177,9 @@ BookmarkSummarizer uses advanced large language models to generate high-quality 
 - Preserving technical terms and key data
 - Generating structured summaries for easier retrieval
 - Supporting various mainstream large language models
+- Supportign 100% offline generation via ollama for complete privacy
+
+Tip: if ollama is used, it is advised to set the context window to 128k and use a model that supports such a wide context window such as gemma3:1b, so that summaries are done on the whole bookmark's content without truncation.
 
 ### Checkpoint Recovery
 

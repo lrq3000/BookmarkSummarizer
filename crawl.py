@@ -85,10 +85,12 @@ content_hashes_db = None  # LMDB database for content hash deduplication
 bookmarks_db = None  # LMDB database for storing bookmarks with integer keys
 failed_records_db = None  # LMDB database for storing failed records
 url_to_key_db = None  # LMDB database for URL to key mapping (O(1) lookups for flushing)
+domain_index_db = None  # LMDB database for domain-based secondary indexing (stores only keys)
+date_index_db = None  # LMDB database for date-based secondary indexing (stores only keys)
 
 # LMDB configuration defaults
 DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
-DEFAULT_LMDB_MAX_DBS = 5
+DEFAULT_LMDB_MAX_DBS = 7
 
 # Backup configuration defaults
 BACKUP_BASE_DIR = os.path.expanduser("./backups")
@@ -389,16 +391,18 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False):
     - bookmarks_db: LMDB database for storing bookmarks with integer keys
     - failed_records_db: LMDB database for storing failed records with integer keys
     - url_to_key_db: LMDB database for URL to key mapping (O(1) lookups for flushing)
+    - domain_index_db: LMDB database for domain-based secondary indexing (stores only keys)
+    - date_index_db: LMDB database for date-based secondary indexing (stores only keys)
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
 
     Parameters:
         map_size (int, optional): Size of the memory map in bytes. Defaults to 1GB.
-        max_dbs (int, optional): Maximum number of named databases. Defaults to 5.
+        max_dbs (int, optional): Maximum number of named databases. Defaults to 7.
         readonly (bool, optional): Open database in read-only mode. Defaults to False.
     """
-    global lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, use_fallback
+    global lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, domain_index_db, date_index_db, use_fallback
 
     # Use defaults if not specified
     if map_size is None:
@@ -422,6 +426,8 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False):
         bookmarks_db = lmdb_env.open_db(b'bookmarks')
         failed_records_db = lmdb_env.open_db(b'failed_records')
         url_to_key_db = lmdb_env.open_db(b'url_to_key')
+        domain_index_db = lmdb_env.open_db(b'domain_index')
+        date_index_db = lmdb_env.open_db(b'date_index')
 
         logger.info(f"Initialized LMDB database at {lmdb_storage_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
 
@@ -1167,7 +1173,10 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
                     if key_bytes is not None:
                         # Update existing record
                         key = int.from_bytes(key_bytes, 'big')
-                        txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                        bookmark_key = key.to_bytes(4, 'big')
+                        txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
+                        # Update secondary indexes for existing record
+                        update_secondary_indexes(txn, bookmark_key, bookmark)
                     else:
                         # Add new record with next available key
                         cursor = txn.cursor(bookmarks_db)
@@ -1175,9 +1184,12 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
                             next_key = int.from_bytes(cursor.key(), 'big') + 1
                         else:
                             next_key = 1
-                        txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                        bookmark_key = next_key.to_bytes(4, 'big')
+                        txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
                         # Update url_to_key_db for future O(1) lookups
-                        txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
+                        txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                        # Update secondary indexes for new record
+                        update_secondary_indexes(txn, bookmark_key, bookmark)
 
                 print(f"{progress_info} Current progress saved to LMDB")
             except Exception as e:
@@ -1293,6 +1305,117 @@ def clean_text(text):
     lines = [line for line in lines if line]
     # Join lines
     return '\n'.join(lines)
+
+# Extract domain from URL for secondary indexing
+def extract_domain(url):
+    """
+    Extract domain from URL for secondary indexing.
+
+    Parameters:
+        url (str): The URL to extract domain from
+
+    Returns:
+        str: The domain (e.g., 'example.com') or empty string if extraction fails
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        # Remove www. prefix if present
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        return domain
+    except Exception:
+        return ""
+
+# Extract date from bookmark for secondary indexing
+def extract_date(bookmark):
+    """
+    Extract date from bookmark for secondary indexing.
+
+    Uses date_added field if available, otherwise falls back to crawl_time or current date.
+
+    Parameters:
+        bookmark (dict): The bookmark dictionary
+
+    Returns:
+        str: Date in YYYY-MM-DD format
+    """
+    try:
+        # Try date_added first (from browser bookmarks)
+        date_str = bookmark.get('date_added')
+        if date_str and date_str != 'N/A':
+            # Parse ISO format date
+            if 'T' in date_str:
+                date_obj = datetime.datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            else:
+                date_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+            return date_obj.strftime('%Y-%m-%d')
+    except Exception:
+        pass
+
+    try:
+        # Try crawl_time
+        crawl_time = bookmark.get('crawl_time')
+        if crawl_time:
+            date_obj = datetime.datetime.strptime(crawl_time, '%Y-%m-%dT%H:%M:%S')
+            return date_obj.strftime('%Y-%m-%d')
+    except Exception:
+        pass
+
+    # Fallback to current date
+    return datetime.datetime.now().strftime('%Y-%m-%d')
+
+# Update secondary indexes for a bookmark
+def update_secondary_indexes(txn, bookmark_key, bookmark):
+    """
+    Update secondary indexes (domain and date) for a bookmark.
+
+    This function maintains the secondary indexes by storing bookmark keys
+    under domain and date keys for efficient querying.
+
+    Parameters:
+        txn: LMDB transaction object
+        bookmark_key (bytes): The primary key of the bookmark
+        bookmark (dict): The bookmark dictionary
+    """
+    try:
+        # Extract domain and date
+        url = bookmark.get('url', '')
+        domain = extract_domain(url)
+        date = extract_date(bookmark)
+
+        # Update domain index (domain -> list of bookmark keys)
+        if domain:
+            domain_key = domain.encode('utf-8')
+            # Get existing keys for this domain
+            existing_keys = txn.get(domain_key, db=domain_index_db)
+            if existing_keys:
+                # Deserialize existing keys, add new key, re-serialize
+                keys_set = set(pickle.loads(existing_keys))
+                keys_set.add(bookmark_key)
+                txn.put(domain_key, pickle.dumps(keys_set), db=domain_index_db)
+            else:
+                # First key for this domain
+                txn.put(domain_key, pickle.dumps({bookmark_key}), db=domain_index_db)
+
+        # Update date index (date -> list of bookmark keys)
+        if date:
+            date_key = date.encode('utf-8')
+            # Get existing keys for this date
+            existing_keys = txn.get(date_key, db=date_index_db)
+            if existing_keys:
+                # Deserialize existing keys, add new key, re-serialize
+                keys_set = set(pickle.loads(existing_keys))
+                keys_set.add(bookmark_key)
+                txn.put(date_key, pickle.dumps(keys_set), db=date_index_db)
+            else:
+                # First key for this date
+                txn.put(date_key, pickle.dumps({bookmark_key}), db=date_index_db)
+
+    except Exception as e:
+        logger.warning(f"Failed to update secondary indexes for bookmark {bookmark_key}: {e}")
+        # Don't fail the entire operation for index update issues
 
 # Initialize Selenium WebDriver
 def init_webdriver():
@@ -1660,9 +1783,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                                         next_key = int.from_bytes(cursor.key(), 'big') + 1
                                     else:
                                         next_key = 1
-                                    txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    bookmark_key = next_key.to_bytes(4, 'big')
+                                    txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
                                     # Update url_to_key_db for future O(1) lookups
-                                    txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
+                                    txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                                    # Update secondary indexes
+                                    update_secondary_indexes(txn, bookmark_key, bookmark)
                         bookmarks_processed += len(batch)
                         print(f"Committed batch of {len(batch)} bookmarks to LMDB")
 
@@ -1851,9 +1977,12 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                                         next_key = int.from_bytes(cursor.key(), 'big') + 1
                                     else:
                                         next_key = 1
-                                    txn.put(next_key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    bookmark_key = next_key.to_bytes(4, 'big')
+                                    txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
                                     # Update url_to_key_db for future O(1) lookups
-                                    txn.put(url.encode('utf-8'), next_key.to_bytes(4, 'big'), db=url_to_key_db)
+                                    txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                                    # Update secondary indexes
+                                    update_secondary_indexes(txn, bookmark_key, bookmark)
                         bookmarks_processed += len(batch)
                         print(f"Committed batch of {len(batch)} bookmarks to LMDB")
 
@@ -2120,7 +2249,7 @@ def parse_args():
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
     # Declare global variables used in this function
-    global use_fallback, lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db
+    global use_fallback, lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, domain_index_db, date_index_db
 
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -2220,12 +2349,16 @@ def main():
                 txn.drop(bookmarks_db)
                 txn.drop(failed_records_db)
                 txn.drop(url_to_key_db)
+                txn.drop(domain_index_db)
+                txn.drop(date_index_db)
             # Re-open databases after clearing
             url_hashes_db = lmdb_env.open_db(b'url_hashes')
             content_hashes_db = lmdb_env.open_db(b'content_hashes')
             bookmarks_db = lmdb_env.open_db(b'bookmarks')
             failed_records_db = lmdb_env.open_db(b'failed_records')
             url_to_key_db = lmdb_env.open_db(b'url_to_key')
+            domain_index_db = lmdb_env.open_db(b'domain_index')
+            date_index_db = lmdb_env.open_db(b'date_index')
             print("Cleared existing LMDB databases for rebuild")
         except Exception as e:
             logger.error(f"Error clearing LMDB databases for rebuild: {e}")

@@ -37,10 +37,12 @@ import pickle
 lmdb_path = os.path.expanduser("./bookmark_index.lmdb")
 lmdb_env = None
 bookmarks_db = None  # LMDB database for storing bookmarks
+domain_index_db = None  # LMDB database for domain-based secondary indexing
+date_index_db = None  # LMDB database for date-based secondary indexing
 
 # LMDB configuration defaults
 DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
-DEFAULT_LMDB_MAX_DBS = 1
+DEFAULT_LMDB_MAX_DBS = 7
 
 # In-memory fallback structures for graceful degradation
 fallback_bookmarks = []
@@ -111,8 +113,10 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False):
         # Create LMDB environment with configurable size limits
         lmdb_env = lmdb.open(lmdb_path, map_size=map_size, max_dbs=max_dbs, readonly=readonly)
 
-        # Open bookmarks database
+        # Open databases
         bookmarks_db = lmdb_env.open_db(b'bookmarks')
+        domain_index_db = lmdb_env.open_db(b'domain_index')
+        date_index_db = lmdb_env.open_db(b'date_index')
 
         print(f"Initialized LMDB database at {lmdb_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
 
@@ -588,6 +592,120 @@ def search_bookmarks(query_str, index_dir='./whoosh_index', limit=10, page=1, pa
             'search_time': search_time,
             'query': query_str
         }
+
+
+def query_bookmarks_by_domain(domain, limit=50):
+    """
+    Query bookmarks by domain using lazy lookup from secondary index.
+
+    This function uses the domain secondary index to efficiently find bookmarks
+    for a specific domain, then performs lazy lookup to retrieve full bookmark data.
+
+    Parameters:
+        domain (str): The domain to query (e.g., 'example.com')
+        limit (int): Maximum number of bookmarks to return
+
+    Returns:
+        list: List of bookmark dictionaries for the domain
+    """
+    def query_operation(txn):
+        # Get bookmark keys for this domain from secondary index
+        domain_key = domain.lower().encode('utf-8')
+        keys_data = txn.get(domain_key, db=domain_index_db)
+
+        if not keys_data:
+            return []
+
+        # Deserialize the set of bookmark keys
+        bookmark_keys = pickle.loads(keys_data)
+
+        # Lazy lookup: retrieve full bookmark data for each key
+        bookmarks = []
+        for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
+            bookmark_data = txn.get(key_bytes, db=bookmarks_db)
+            if bookmark_data:
+                bookmark = pickle.loads(bookmark_data)
+                bookmarks.append(bookmark)
+
+        return bookmarks
+
+    return safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by domain", readonly=True)
+
+
+def query_bookmarks_by_date(date, limit=50):
+    """
+    Query bookmarks by date using lazy lookup from secondary index.
+
+    This function uses the date secondary index to efficiently find bookmarks
+    for a specific date, then performs lazy lookup to retrieve full bookmark data.
+
+    Parameters:
+        date (str): The date to query in YYYY-MM-DD format
+        limit (int): Maximum number of bookmarks to return
+
+    Returns:
+        list: List of bookmark dictionaries for the date
+    """
+    def query_operation(txn):
+        # Get bookmark keys for this date from secondary index
+        date_key = date.encode('utf-8')
+        keys_data = txn.get(date_key, db=date_index_db)
+
+        if not keys_data:
+            return []
+
+        # Deserialize the set of bookmark keys
+        bookmark_keys = pickle.loads(keys_data)
+
+        # Lazy lookup: retrieve full bookmark data for each key
+        bookmarks = []
+        for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
+            bookmark_data = txn.get(key_bytes, db=bookmarks_db)
+            if bookmark_data:
+                bookmark = pickle.loads(bookmark_data)
+                bookmarks.append(bookmark)
+
+        return bookmarks
+
+    return safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by date", readonly=True)
+
+
+def get_domain_stats():
+    """
+    Get statistics about domains in the secondary index.
+
+    Returns:
+        dict: Dictionary with domain statistics including count of bookmarks per domain
+    """
+    def stats_operation(txn):
+        stats = {}
+        cursor = txn.cursor(db=domain_index_db)
+        for domain_bytes, keys_data in cursor:
+            domain = domain_bytes.decode('utf-8')
+            bookmark_keys = pickle.loads(keys_data)
+            stats[domain] = len(bookmark_keys)
+        return stats
+
+    return safe_lmdb_operation(stats_operation, lambda: {}, "get domain statistics", readonly=True)
+
+
+def get_date_stats():
+    """
+    Get statistics about dates in the secondary index.
+
+    Returns:
+        dict: Dictionary with date statistics including count of bookmarks per date
+    """
+    def stats_operation(txn):
+        stats = {}
+        cursor = txn.cursor(db=date_index_db)
+        for date_bytes, keys_data in cursor:
+            date = date_bytes.decode('utf-8')
+            bookmark_keys = pickle.loads(keys_data)
+            stats[date] = len(bookmark_keys)
+        return stats
+
+    return safe_lmdb_operation(stats_operation, lambda: {}, "get date statistics", readonly=True)
 
 
 # FastAPI application setup for web interface

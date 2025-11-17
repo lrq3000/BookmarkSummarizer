@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookmark-summarizer"
-version = "0.2.6"
+version = "0.2.7"
 description = "BookmarkSummarizer is a powerful tool that crawls your Chrome bookmarks, generates summaries using large language models, and turns them into a personal knowledge base. Easily search and utilize all your bookmarked web resources without manual organization."
 readme = {file = "README.MD", content-type = "text/markdown"}
 license = {text = "Apache-2.0"}

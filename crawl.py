@@ -546,7 +546,7 @@ def load_custom_parsers():
     Each parser should be a Python module with a 'main(bookmark: dict) -> dict' function.
 
     Returns:
-        list: List of callable parser functions.
+        list: List of callable parser functions, sorted alphabetically by filename.
     """
     parsers = []
     parsers_dir = os.path.join(os.path.dirname(__file__), 'custom_parsers')
@@ -570,7 +570,7 @@ def load_custom_parsers():
 
                     # Check if the module has a 'main' function
                     if hasattr(module, 'main') and callable(module.main):
-                        parsers.append(module.main)
+                        parsers.append((filename, module.main))
                         print(f"Loaded custom parser: {module_name}")
                     else:
                         print(f"Warning: {module_name} does not have a callable 'main' function, skipping")
@@ -579,8 +579,11 @@ def load_custom_parsers():
             except Exception as e:
                 print(f"Error loading custom parser {module_name}: {e}")
 
+    # Sort parsers alphabetically by filename to ensure systematic execution order
+    parsers.sort(key=lambda x: x[0])
+
     print(f"Loaded {len(parsers)} custom parsers")
-    return parsers
+    return [parser for filename, parser in parsers]
 
 # Signal handler for graceful shutdown
 def signal_handler(signum, frame):

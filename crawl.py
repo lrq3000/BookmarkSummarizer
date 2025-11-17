@@ -66,6 +66,38 @@ import lmdb
 import pickle
 import sys
 
+def sanitize_bookmark(bookmark):
+    """
+    Sanitize bookmark dictionary by removing non-serializable objects like selenium webdriver instances.
+    Recursively processes nested dictionaries and lists.
+    """
+    if not isinstance(bookmark, dict):
+        return bookmark
+    sanitized = {}
+    for key, value in bookmark.items():
+        if isinstance(value, dict):
+            sanitized[key] = sanitize_bookmark(value)
+        elif isinstance(value, list):
+            sanitized[key] = [sanitize_bookmark(item) if isinstance(item, dict) else item for item in value]
+        else:
+            # Check if it's a selenium webdriver instance
+            if hasattr(value, 'quit') and hasattr(value, 'get') and hasattr(value, 'find_element'):
+                # Likely a webdriver, skip it
+                continue
+            sanitized[key] = value
+    return sanitized
+
+def safe_pickle(obj):
+    """
+    Safely pickle an object with increased recursion limit and sanitization.
+    """
+    import sys
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(10000)
+    try:
+        return pickle.dumps(sanitize_bookmark(obj))
+    finally:
+        sys.setrecursionlimit(old_limit)
 
 # --- Browser Profile Configuration ---
 # Default profile paths are handled by browser_history module
@@ -1188,7 +1220,7 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
                         else:
                             next_key = 1
                         bookmark_key = next_key.to_bytes(4, 'big')
-                        txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
+                        txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
                         # Update url_to_key_db for future O(1) lookups
                         txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
                         # Update secondary indexes for new record
@@ -1778,7 +1810,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
                                 if key_bytes is not None:
                                     key = int.from_bytes(key_bytes, 'big')
-                                    txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    txn.put(key.to_bytes(4, 'big'), safe_pickle(bookmark), db=bookmarks_db)
                                 else:
                                     # Find next available key
                                     cursor = txn.cursor(bookmarks_db)

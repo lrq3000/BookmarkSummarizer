@@ -121,7 +121,7 @@ domain_index_db = None  # LMDB database for domain-based secondary indexing (sto
 date_index_db = None  # LMDB database for date-based secondary indexing (stores only keys)
 
 # LMDB configuration defaults
-DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
+DEFAULT_LMDB_MAP_SIZE = 10 * 1024 * 1024  # 10MB - reduced for dynamic resizing
 DEFAULT_LMDB_MAX_DBS = 7
 
 # Backup configuration defaults
@@ -411,9 +411,14 @@ def safe_backup_operation(operation_name="pre_write_backup", continue_on_failure
 # LMDB operations are atomic and don't require retry mechanisms like ZODB
 # This function is removed as LMDB handles transactions differently
 
+# Global resize configuration and state tracking
+lmdb_resize_threshold = 0.8  # Default threshold for triggering resize
+lmdb_growth_factor = 2.0     # Default growth factor for resize
+current_lmdb_map_size = None  # Track current map size for resize operations
+
 # Initialize LMDB database and persistent structures for on-disk indexing
 # LMDB uses key-value stores for efficient indexing and provides transactional persistence
-def init_lmdb(map_size=None, max_dbs=None, readonly=False):
+def init_lmdb(map_size=None, max_dbs=None, readonly=False, resize_threshold=None, growth_factor=None):
     """
     Initialize LMDB database with persistent key-value stores for deduplication and storage.
 
@@ -428,19 +433,30 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False):
 
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
+    Supports dynamic resizing configuration for MapFullError handling.
 
     Parameters:
-        map_size (int, optional): Size of the memory map in bytes. Defaults to 1GB.
+        map_size (int, optional): Size of the memory map in bytes. Defaults to 10MB.
         max_dbs (int, optional): Maximum number of named databases. Defaults to 7.
         readonly (bool, optional): Open database in read-only mode. Defaults to False.
+        resize_threshold (float, optional): Threshold for triggering resize (0.0-1.0). Defaults to 0.8.
+        growth_factor (float, optional): Growth factor for resize. Defaults to 2.0.
     """
     global lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, domain_index_db, date_index_db, use_fallback
+    global lmdb_resize_threshold, lmdb_growth_factor, current_lmdb_map_size
 
     # Use defaults if not specified
     if map_size is None:
         map_size = DEFAULT_LMDB_MAP_SIZE
     if max_dbs is None:
         max_dbs = DEFAULT_LMDB_MAX_DBS
+    if resize_threshold is not None:
+        lmdb_resize_threshold = resize_threshold
+    if growth_factor is not None:
+        lmdb_growth_factor = growth_factor
+
+    # Track current map size for resize operations
+    current_lmdb_map_size = map_size
 
     # Check disk space first (skip for readonly mode)
     if not readonly and not check_disk_space():
@@ -461,7 +477,7 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False):
         domain_index_db = lmdb_env.open_db(b'domain_index')
         date_index_db = lmdb_env.open_db(b'date_index')
 
-        logger.info(f"Initialized LMDB database at {lmdb_storage_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
+        logger.info(f"Initialized LMDB database at {lmdb_storage_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly}, resize_threshold={lmdb_resize_threshold}, growth_factor={lmdb_growth_factor})")
 
     except lmdb.MapFullError as e:
         logger.error(f"LMDB MapFullError: Database map size {map_size} is too small. Consider increasing map_size.")
@@ -508,7 +524,7 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
     Returns:
         Any: Result of the operation or fallback
     """
-    global use_fallback
+    global use_fallback, current_lmdb_map_size, lmdb_growth_factor
 
     if use_fallback:
         if fallback_func:
@@ -525,8 +541,31 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
             result = operation_func(txn)
         return result
     except lmdb.MapFullError as e:
-        logger.error(f"LMDB MapFullError during {operation_name}: Database map is full. Consider increasing map_size.")
-        use_fallback = True
+        logger.warning(f"LMDB MapFullError during {operation_name}: Database map is full, attempting dynamic resize.")
+
+        # Attempt dynamic resize if not in readonly mode
+        if not readonly and current_lmdb_map_size is not None:
+            resize_success, new_map_size = resize_lmdb_database(
+                current_lmdb_map_size,
+                lmdb_growth_factor
+            )
+            if resize_success:
+                current_lmdb_map_size = new_map_size
+                logger.info(f"Resize successful, retrying {operation_name}")
+                # Retry the operation with new map size
+                try:
+                    with lmdb_env.begin(write=not readonly) as txn:
+                        result = operation_func(txn)
+                    return result
+                except Exception as retry_e:
+                    logger.error(f"Operation {operation_name} failed even after resize: {retry_e}")
+                    use_fallback = True
+            else:
+                logger.error(f"Resize failed for {operation_name}, falling back to in-memory structures")
+                use_fallback = True
+        else:
+            logger.error(f"MapFullError in readonly mode or no map size tracking for {operation_name}, falling back to in-memory structures")
+            use_fallback = True
     except lmdb.MapResizedError as e:
         logger.error(f"LMDB MapResizedError during {operation_name}: Database was resized by another process.")
         use_fallback = True
@@ -557,6 +596,88 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
         except Exception as fallback_e:
             logger.error(f"Fallback {operation_name} failed: {fallback_e}")
     return None
+
+# Resize LMDB database dynamically when MapFullError occurs
+def resize_lmdb_database(current_map_size, growth_factor=2.0, max_attempts=5):
+    """
+    Dynamically resize the LMDB database by increasing the map size.
+
+    This function implements dynamic resizing logic that:
+    1. Calculates new map size using growth factor
+    2. Attempts to reopen the database with new size
+    3. Handles multiple resize attempts if needed
+    4. Provides detailed logging of resize operations
+
+    Parameters:
+        current_map_size (int): Current map size in bytes
+        growth_factor (float): Factor by which to grow the map size (default: 2.0)
+        max_attempts (int): Maximum number of resize attempts (default: 5)
+
+    Returns:
+        tuple: (success, new_map_size)
+            - success (bool): True if resize succeeded
+            - new_map_size (int): New map size in bytes, or current size if failed
+    """
+    global lmdb_env, lmdb_storage_path
+
+    logger.info(f"Attempting to resize LMDB database from {current_map_size} bytes ({current_map_size/1024/1024:.1f} MB)")
+
+    for attempt in range(max_attempts):
+        try:
+            # Calculate new map size
+            new_map_size = int(current_map_size * growth_factor)
+            logger.info(f"Resize attempt {attempt + 1}/{max_attempts}: trying new map size {new_map_size} bytes ({new_map_size/1024/1024:.1f} MB)")
+
+            # Close current environment if open
+            if lmdb_env:
+                try:
+                    lmdb_env.close()
+                    lmdb_env = None
+                    logger.debug("Closed existing LMDB environment for resize")
+                except Exception as e:
+                    logger.warning(f"Error closing LMDB environment during resize: {e}")
+
+            # Attempt to reopen with new map size
+            lmdb_env = lmdb.open(lmdb_storage_path, map_size=new_map_size, max_dbs=DEFAULT_LMDB_MAX_DBS)
+
+            # Re-open databases
+            global url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, domain_index_db, date_index_db
+            url_hashes_db = lmdb_env.open_db(b'url_hashes')
+            content_hashes_db = lmdb_env.open_db(b'content_hashes')
+            bookmarks_db = lmdb_env.open_db(b'bookmarks')
+            failed_records_db = lmdb_env.open_db(b'failed_records')
+            url_to_key_db = lmdb_env.open_db(b'url_to_key')
+            domain_index_db = lmdb_env.open_db(b'domain_index')
+            date_index_db = lmdb_env.open_db(b'date_index')
+
+            logger.info(f"Successfully resized LMDB database to {new_map_size} bytes ({new_map_size/1024/1024:.1f} MB)")
+            return True, new_map_size
+
+        except Exception as e:
+            logger.warning(f"Resize attempt {attempt + 1} failed: {e}")
+            if attempt == max_attempts - 1:
+                logger.error(f"All {max_attempts} resize attempts failed. Keeping current map size.")
+                # Try to reopen with original size
+                try:
+                    if lmdb_env:
+                        lmdb_env.close()
+                    lmdb_env = lmdb.open(lmdb_storage_path, map_size=current_map_size, max_dbs=DEFAULT_LMDB_MAX_DBS)
+                    # Re-open databases
+                    url_hashes_db = lmdb_env.open_db(b'url_hashes')
+                    content_hashes_db = lmdb_env.open_db(b'content_hashes')
+                    bookmarks_db = lmdb_env.open_db(b'bookmarks')
+                    failed_records_db = lmdb_env.open_db(b'failed_records')
+                    url_to_key_db = lmdb_env.open_db(b'url_to_key')
+                    domain_index_db = lmdb_env.open_db(b'domain_index')
+                    date_index_db = lmdb_env.open_db(b'date_index')
+                    logger.info("Reopened LMDB database with original map size after resize failure")
+                except Exception as reopen_e:
+                    logger.error(f"Failed to reopen LMDB database after resize failure: {reopen_e}")
+                    global use_fallback
+                    use_fallback = True
+                return False, current_map_size
+
+    return False, current_map_size
 
 # Cleanup LMDB resources
 def cleanup_lmdb():
@@ -1262,20 +1383,20 @@ def get_bookmarks(browser=None, profile_path=None):
     """
     urls = []
 
+    # Map browser name to browser_history class
+    browser_map = {
+        'chrome': Chrome,
+        'firefox': Firefox,
+        'edge': Edge,
+        'opera': Opera,
+        'opera_gx': OperaGX,
+        'safari': Safari,
+        'vivaldi': Vivaldi,
+        'brave': Brave,
+    }
+
     try:
         if browser:
-            # Map browser name to browser_history class
-            browser_map = {
-                'chrome': Chrome,
-                'firefox': Firefox,
-                'edge': Edge,
-                'opera': Opera,
-                'opera_gx': OperaGX,
-                'safari': Safari,
-                'vivaldi': Vivaldi,
-                'brave': Brave,
-            }
-
             if browser not in browser_map:
                 raise ValueError(f"Unsupported browser: {browser}")
 
@@ -1291,21 +1412,32 @@ def get_bookmarks(browser=None, profile_path=None):
             bookmarks_output = browser_instance.fetch_bookmarks()
             bookmarks = bookmarks_output.bookmarks
         else:
-            # Fetch from all browsers
-            from browser_history import get_bookmarks
-            bookmarks_output = get_bookmarks()
-            bookmarks = bookmarks_output.bookmarks
+            # Fetch from all browsers individually to handle errors per browser
+            bookmarks = []
+            for browser_name, browser_class in browser_map.items():
+                try:
+                    browser_instance = browser_class()
+                    bookmarks_output = browser_instance.fetch_bookmarks()
+                    bookmarks.extend(bookmarks_output.bookmarks)
+                except Exception as e:
+                    print(f"Error fetching bookmarks from {browser_name}: {e}")
+                    continue
 
-        # Convert to the expected format
+        # Convert to the expected format, filtering out invalid bookmarks
         for bookmark in bookmarks:
             # browser_history returns tuples of (datetime, url, title, folder)
             timestamp, url, title, folder = bookmark
+
+            # Skip bookmarks with missing URL or title
+            if not url or not title:
+                continue
+
             bookmark_info = {
                 "date_added": timestamp.isoformat() if timestamp else "N/A",
                 "date_last_used": "N/A",  # browser_history doesn't provide this
                 "guid": "N/A",  # browser_history doesn't provide this
                 "id": "N/A",  # browser_history doesn't provide this
-                "name": title or "N/A",
+                "name": title,
                 "type": "url",
                 "url": url,
             }
@@ -2255,6 +2387,18 @@ def parse_args():
         action='store_true',
         help='Open LMDB database in read-only mode for concurrent access'
     )
+    parser.add_argument(
+        '--lmdb-resize-threshold',
+        type=float,
+        default=0.8,
+        help='Threshold for triggering LMDB resize (0.0-1.0, default: 0.8)'
+    )
+    parser.add_argument(
+        '--lmdb-growth-factor',
+        type=float,
+        default=2.0,
+        help='Growth factor for LMDB resize (default: 2.0)'
+    )
 
     # Add backup control arguments
     parser.add_argument(
@@ -2310,6 +2454,8 @@ def main():
     lmdb_map_size = args.lmdb_map_size or int(os.environ.get('LMDB_MAP_SIZE', DEFAULT_LMDB_MAP_SIZE))
     lmdb_max_dbs = args.lmdb_max_dbs or int(os.environ.get('LMDB_MAX_DBS', DEFAULT_LMDB_MAX_DBS))
     lmdb_readonly = args.lmdb_readonly or bool(os.environ.get('LMDB_READONLY', False))
+    lmdb_resize_threshold = args.lmdb_resize_threshold
+    lmdb_growth_factor = args.lmdb_growth_factor
 
     # Configure backup settings
     global BACKUP_BASE_DIR
@@ -2319,13 +2465,14 @@ def main():
         enable_backup = True  # Explicitly enabled
     backup_continue_on_failure = not args.backup_on_failure_stop
 
-    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly)
+    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly,
+              resize_threshold=lmdb_resize_threshold, growth_factor=lmdb_growth_factor)
 
     # Load existing bookmarks from LMDB if not rebuilding from scratch
     existing_bookmarks = []
     if not args.rebuild:
         existing_bookmarks = safe_lmdb_operation(
-            lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)] if lmdb_env is not None else [],
+            lambda txn: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in txn.cursor(bookmarks_db)] if lmdb_env is not None else [],
             lambda: fallback_bookmarks.copy(),
             "loading existing bookmarks"
         )
@@ -2417,7 +2564,7 @@ def main():
 
         try:
             bookmarks_with_content = safe_lmdb_operation(
-                lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)] if lmdb_env is not None else [],
+                lambda txn: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in txn.cursor(bookmarks_db)] if lmdb_env is not None else [],
                 lambda: fallback_bookmarks.copy(),
                 "loading bookmarks for summary generation"
             )
@@ -2527,7 +2674,7 @@ def main():
     # Just ensure final consistency and provide summary
     try:
         bookmarks_with_content = safe_lmdb_operation(
-            lambda: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in lmdb_env.begin().cursor(bookmarks_db)],
+            lambda txn: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in txn.cursor(bookmarks_db)],
             lambda: fallback_bookmarks.copy(),
             "retrieving final bookmarks list"
         )
@@ -2542,7 +2689,7 @@ def main():
     # Save failed URLs and reasons (keeping JSON format for compatibility)
     try:
         failed_records_list = safe_lmdb_operation(
-            lambda: [pickle.loads(record_bytes) for key_bytes, record_bytes in lmdb_env.begin().cursor(failed_records_db)],
+            lambda txn: [pickle.loads(record_bytes) for key_bytes, record_bytes in txn.cursor(failed_records_db)],
             lambda: fallback_failed_records.copy(),
             "retrieving failed records list"
         )

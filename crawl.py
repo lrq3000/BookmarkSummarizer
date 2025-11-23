@@ -66,26 +66,45 @@ import lmdb
 import pickle
 import sys
 
-def sanitize_bookmark(bookmark):
+def sanitize_bookmark(bookmark, depth=0, seen=None):
     """
     Sanitize bookmark dictionary by removing non-serializable objects like selenium webdriver instances.
-    Recursively processes nested dictionaries and lists.
+    Recursively processes nested dictionaries and lists with cycle detection.
     """
-    if not isinstance(bookmark, dict):
-        return bookmark
-    sanitized = {}
-    for key, value in bookmark.items():
-        if isinstance(value, dict):
-            sanitized[key] = sanitize_bookmark(value)
-        elif isinstance(value, list):
-            sanitized[key] = [sanitize_bookmark(item) if isinstance(item, dict) else item for item in value]
-        else:
-            # Check if it's a selenium webdriver instance
-            if hasattr(value, 'quit') and hasattr(value, 'get') and hasattr(value, 'find_element'):
-                # Likely a webdriver, skip it
+    if seen is None:
+        seen = set()
+
+    # Prevent infinite recursion by detecting cycles
+    if id(bookmark) in seen:
+        return None
+
+    # Add current object to seen set
+    seen.add(id(bookmark))
+
+    try:
+        if not isinstance(bookmark, dict):
+            return bookmark
+        sanitized = {}
+        for key, value in bookmark.items():
+            try:
+                if isinstance(value, dict):
+                    sanitized[key] = sanitize_bookmark(value, depth + 1, seen)
+                elif isinstance(value, list):
+                    sanitized[key] = [sanitize_bookmark(item, depth + 1, seen) if isinstance(item, dict) else item for item in value]
+                else:
+                    # Check if it's a selenium webdriver instance
+                    if hasattr(value, 'quit') and hasattr(value, 'get') and hasattr(value, 'find_element'):
+                        continue
+                    # Check for other complex objects
+                    if hasattr(value, '__dict__') or hasattr(value, '__slots__'):
+                        continue
+                    sanitized[key] = value
+            except RecursionError:
                 continue
-            sanitized[key] = value
-    return sanitized
+        return sanitized
+    finally:
+        # Remove from seen set when done processing this object
+        seen.discard(id(bookmark))
 
 def safe_pickle(obj):
     """
@@ -95,7 +114,8 @@ def safe_pickle(obj):
     old_limit = sys.getrecursionlimit()
     sys.setrecursionlimit(10000)
     try:
-        return pickle.dumps(sanitize_bookmark(obj))
+        sanitized = sanitize_bookmark(obj)
+        return pickle.dumps(sanitized)
     finally:
         sys.setrecursionlimit(old_limit)
 
@@ -1330,7 +1350,7 @@ def generate_summaries_for_bookmarks(bookmarks_with_content, model_config=None, 
                         # Update existing record
                         key = int.from_bytes(key_bytes, 'big')
                         bookmark_key = key.to_bytes(4, 'big')
-                        txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
+                        txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
                         # Update secondary indexes for existing record
                         update_secondary_indexes(txn, bookmark_key, bookmark)
                     else:
@@ -1815,8 +1835,8 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             soup = BeautifulSoup(response.text, "html.parser")
             
             # Extract title
-            if soup.title:
-                title = soup.title.string if soup.title.string else "No Title"
+            if soup.title and soup.title.string and isinstance(soup.title.string, str):
+                title = soup.title.get_text().strip()
             else:
                 title = "No Title"
             
@@ -1826,9 +1846,11 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             
             # Get the full text content of the page directly
             full_text = soup.get_text(separator='\n')
-            
-            # Clean up text
-            content = clean_text(full_text)
+            if isinstance(full_text, str) and full_text.strip():
+                # Clean up text
+                content = clean_text(full_text)
+            else:
+                content = ""
             crawl_method = "requests"
         except Exception as e:
             error_msg = f"Request failed: {str(e)}"
@@ -1905,7 +1927,12 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     bookmark_with_content["crawl_method"] = crawl_method
 
-    print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
+    try:
+        print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
+    except UnicodeEncodeError:
+        # Handle Unicode encoding issues on Windows console
+        safe_title = title.encode('utf-8', 'replace').decode('utf-8')
+        print(f"{progress_info} Successfully crawled: {safe_title} - {url}, content length: {len(content)} characters")
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
@@ -1951,7 +1978,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                                     else:
                                         next_key = 1
                                     bookmark_key = next_key.to_bytes(4, 'big')
-                                    txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
+                                    txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
                                     # Update url_to_key_db for future O(1) lookups
                                     txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
                                     # Update secondary indexes
@@ -2021,7 +2048,9 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             try:
                 print(f"Processing bookmark [{idx+1}]: {title} - {url}")
             except UnicodeEncodeError:
-                print(f"Processing bookmark [{idx+1}]: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                # Handle Unicode encoding issues on Windows console
+                safe_title = title.encode('utf-8', 'replace').decode('utf-8')
+                print(f"Processing bookmark [{idx+1}]: {safe_title} - {url}")
 
             result, failed_info = fetch_webpage_content(bookmark, idx+1, None)  # No total_count for sequential
             if result:
@@ -2136,7 +2165,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
                                 if key_bytes is not None:
                                     key = int.from_bytes(key_bytes, 'big')
-                                    txn.put(key.to_bytes(4, 'big'), pickle.dumps(bookmark), db=bookmarks_db)
+                                    txn.put(key.to_bytes(4, 'big'), safe_pickle(bookmark), db=bookmarks_db)
                                 else:
                                     # Find next available key
                                     cursor = txn.cursor(bookmarks_db)
@@ -2145,7 +2174,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                                     else:
                                         next_key = 1
                                     bookmark_key = next_key.to_bytes(4, 'big')
-                                    txn.put(bookmark_key, pickle.dumps(bookmark), db=bookmarks_db)
+                                    txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
                                     # Update url_to_key_db for future O(1) lookups
                                     txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
                                     # Update secondary indexes

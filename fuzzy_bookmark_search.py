@@ -41,13 +41,8 @@ domain_index_db = None  # LMDB database for domain-based secondary indexing
 date_index_db = None  # LMDB database for date-based secondary indexing
 
 # LMDB configuration defaults
-DEFAULT_LMDB_MAP_SIZE = 10 * 1024 * 1024  # 10MB - reduced for dynamic resizing
+DEFAULT_LMDB_MAP_SIZE = 1024 * 1024 * 1024  # 1GB
 DEFAULT_LMDB_MAX_DBS = 7
-
-# Global resize configuration and state tracking
-lmdb_resize_threshold = 0.8  # Default threshold for triggering resize
-lmdb_growth_factor = 2.0     # Default growth factor for resize
-current_lmdb_map_size = None  # Track current map size for resize operations
 
 # In-memory fallback structures for graceful degradation
 fallback_bookmarks = []
@@ -85,113 +80,28 @@ def check_disk_space(min_space_mb=100):
         print(f"Error checking disk space: {e}")
         return False
 
-# Resize LMDB database dynamically when MapFullError occurs
-def resize_lmdb_database(current_map_size, growth_factor=2.0, max_attempts=5):
-    """
-    Dynamically resize the LMDB database by increasing the map size.
-
-    This function implements dynamic resizing logic that:
-    1. Calculates new map size using growth factor
-    2. Attempts to reopen the database with new size
-    3. Handles multiple resize attempts if needed
-    4. Provides detailed logging of resize operations
-
-    Parameters:
-        current_map_size (int): Current map size in bytes
-        growth_factor (float): Factor by which to grow the map size (default: 2.0)
-        max_attempts (int): Maximum number of resize attempts (default: 5)
-
-    Returns:
-        tuple: (success, new_map_size)
-            - success (bool): True if resize succeeded
-            - new_map_size (int): New map size in bytes, or current size if failed
-    """
-    global lmdb_env, lmdb_path
-
-    print(f"Attempting to resize LMDB database from {current_map_size} bytes ({current_map_size/1024/1024:.1f} MB)")
-
-    for attempt in range(max_attempts):
-        try:
-            # Calculate new map size
-            new_map_size = int(current_map_size * growth_factor)
-            print(f"Resize attempt {attempt + 1}/{max_attempts}: trying new map size {new_map_size} bytes ({new_map_size/1024/1024:.1f} MB)")
-
-            # Close current environment if open
-            if lmdb_env:
-                try:
-                    lmdb_env.close()
-                    lmdb_env = None
-                    print("Closed existing LMDB environment for resize")
-                except Exception as e:
-                    print(f"Error closing LMDB environment during resize: {e}")
-
-            # Attempt to reopen with new map size
-            lmdb_env = lmdb.open(lmdb_path, map_size=new_map_size, max_dbs=DEFAULT_LMDB_MAX_DBS)
-
-            # Re-open databases
-            global bookmarks_db, domain_index_db, date_index_db
-            bookmarks_db = lmdb_env.open_db(b'bookmarks')
-            domain_index_db = lmdb_env.open_db(b'domain_index')
-            date_index_db = lmdb_env.open_db(b'date_index')
-
-            print(f"Successfully resized LMDB database to {new_map_size} bytes ({new_map_size/1024/1024:.1f} MB)")
-            return True, new_map_size
-
-        except Exception as e:
-            print(f"Resize attempt {attempt + 1} failed: {e}")
-            if attempt == max_attempts - 1:
-                print(f"All {max_attempts} resize attempts failed. Keeping current map size.")
-                # Try to reopen with original size
-                try:
-                    if lmdb_env:
-                        lmdb_env.close()
-                    lmdb_env = lmdb.open(lmdb_path, map_size=current_map_size, max_dbs=DEFAULT_LMDB_MAX_DBS)
-                    # Re-open databases
-                    bookmarks_db = lmdb_env.open_db(b'bookmarks')
-                    domain_index_db = lmdb_env.open_db(b'domain_index')
-                    date_index_db = lmdb_env.open_db(b'date_index')
-                    print("Reopened LMDB database with original map size after resize failure")
-                except Exception as reopen_e:
-                    print(f"Failed to reopen LMDB database after resize failure: {reopen_e}")
-                    global use_fallback
-                    use_fallback = True
-                return False, current_map_size
-
-    return False, current_map_size
-
 # Initialize LMDB database and persistent structures for on-disk indexing
 # LMDB uses memory-mapped database for efficient key-value storage
-def init_lmdb(map_size=None, max_dbs=None, readonly=False, resize_threshold=None, growth_factor=None):
+def init_lmdb(map_size=None, max_dbs=None, readonly=False):
     """
     Initialize LMDB database for deduplication and storage.
 
     This function sets up the LMDB environment and opens the bookmarks database.
     All operations are transactional for data integrity.
     Includes comprehensive error handling with fallback to in-memory structures.
-    Supports dynamic resizing configuration for MapFullError handling.
 
     Parameters:
-        map_size (int, optional): Size of the memory map in bytes. Defaults to 10MB.
-        max_dbs (int, optional): Maximum number of named databases. Defaults to 7.
+        map_size (int, optional): Size of the memory map in bytes. Defaults to 1GB.
+        max_dbs (int, optional): Maximum number of named databases. Defaults to 1.
         readonly (bool, optional): Open database in read-only mode. Defaults to False.
-        resize_threshold (float, optional): Threshold for triggering resize (0.0-1.0). Defaults to 0.8.
-        growth_factor (float, optional): Growth factor for resize. Defaults to 2.0.
     """
     global lmdb_env, bookmarks_db, use_fallback
-    global lmdb_resize_threshold, lmdb_growth_factor, current_lmdb_map_size
 
     # Use defaults if not specified
     if map_size is None:
         map_size = DEFAULT_LMDB_MAP_SIZE
     if max_dbs is None:
         max_dbs = DEFAULT_LMDB_MAX_DBS
-    if resize_threshold is not None:
-        lmdb_resize_threshold = resize_threshold
-    if growth_factor is not None:
-        lmdb_growth_factor = growth_factor
-
-    # Track current map size for resize operations
-    current_lmdb_map_size = map_size
 
     # Check disk space first (skip for readonly mode)
     if not readonly and not check_disk_space():
@@ -208,7 +118,7 @@ def init_lmdb(map_size=None, max_dbs=None, readonly=False, resize_threshold=None
         domain_index_db = lmdb_env.open_db(b'domain_index')
         date_index_db = lmdb_env.open_db(b'date_index')
 
-        print(f"Initialized LMDB database at {lmdb_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly}, resize_threshold={lmdb_resize_threshold}, growth_factor={lmdb_growth_factor})")
+        print(f"Initialized LMDB database at {lmdb_path} (map_size={map_size}, max_dbs={max_dbs}, readonly={readonly})")
 
     except lmdb.MapFullError as e:
         print(f"LMDB MapFullError: Database map size {map_size} is too small. Consider increasing map_size.")
@@ -272,32 +182,8 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
             result = operation_func(txn)
         return result
     except lmdb.MapFullError as e:
-        print(f"LMDB MapFullError during {operation_name}: Database map is full, attempting dynamic resize.")
-
-        # Attempt dynamic resize if not in readonly mode
-        if not readonly and current_lmdb_map_size is not None:
-            global current_lmdb_map_size
-            resize_success, new_map_size = resize_lmdb_database(
-                current_lmdb_map_size,
-                lmdb_growth_factor
-            )
-            if resize_success:
-                current_lmdb_map_size = new_map_size
-                print(f"Resize successful, retrying {operation_name}")
-                # Retry the operation with new map size
-                try:
-                    with lmdb_env.begin(write=not readonly) as txn:
-                        result = operation_func(txn)
-                    return result
-                except Exception as retry_e:
-                    print(f"Operation {operation_name} failed even after resize: {retry_e}")
-                    use_fallback = True
-            else:
-                print(f"Resize failed for {operation_name}, falling back to in-memory structures")
-                use_fallback = True
-        else:
-            print(f"MapFullError in readonly mode or no map size tracking for {operation_name}, falling back to in-memory structures")
-            use_fallback = True
+        print(f"LMDB MapFullError during {operation_name}: Database map is full. Consider increasing map_size.")
+        use_fallback = True
     except lmdb.MapResizedError as e:
         print(f"LMDB MapResizedError during {operation_name}: Database was resized by another process.")
         use_fallback = True
@@ -1156,15 +1042,11 @@ def main():
     parser.add_argument('--lmdb-path', type=str, default='bookmark_index.lmdb',
                           help='Path to the LMDB database directory (default: bookmark_index.lmdb)')
     parser.add_argument('--lmdb-map-size', type=int,
-                           help=f'Size of LMDB memory map in bytes (default: {DEFAULT_LMDB_MAP_SIZE})')
+                          help=f'Size of LMDB memory map in bytes (default: {DEFAULT_LMDB_MAP_SIZE})')
     parser.add_argument('--lmdb-max-dbs', type=int,
-                           help=f'Maximum number of LMDB named databases (default: {DEFAULT_LMDB_MAX_DBS})')
+                          help=f'Maximum number of LMDB named databases (default: {DEFAULT_LMDB_MAX_DBS})')
     parser.add_argument('--lmdb-readonly', action='store_true',
-                           help='Open LMDB database in read-only mode for concurrent access')
-    parser.add_argument('--lmdb-resize-threshold', type=float, default=0.8,
-                           help='Threshold for triggering LMDB resize (0.0-1.0, default: 0.8)')
-    parser.add_argument('--lmdb-growth-factor', type=float, default=2.0,
-                           help='Growth factor for LMDB resize (default: 2.0)')
+                          help='Open LMDB database in read-only mode for concurrent access')
 
     args = parser.parse_args()
 
@@ -1173,12 +1055,9 @@ def main():
     lmdb_map_size = args.lmdb_map_size or int(os.environ.get('LMDB_MAP_SIZE', DEFAULT_LMDB_MAP_SIZE))
     lmdb_max_dbs = args.lmdb_max_dbs or int(os.environ.get('LMDB_MAX_DBS', DEFAULT_LMDB_MAX_DBS))
     lmdb_readonly = args.lmdb_readonly or bool(os.environ.get('LMDB_READONLY', False))
-    lmdb_resize_threshold = args.lmdb_resize_threshold
-    lmdb_growth_factor = args.lmdb_growth_factor
 
     print("Initializing LMDB database...")
-    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly,
-              resize_threshold=lmdb_resize_threshold, growth_factor=lmdb_growth_factor)
+    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly)
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.

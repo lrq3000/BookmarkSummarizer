@@ -1785,7 +1785,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     bookmark = apply_custom_parsers(bookmark, custom_parsers)
 
     url = bookmark["url"]
-    title = bookmark.get("name", "No Title")  # Get title from bookmark
+    bookmark_title = bookmark.get("name", "No Title")  # Preserve original bookmark title
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
 
     # Initialize variables to prevent unassigned error
@@ -1828,17 +1828,17 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' not in content_type.lower() and 'text/plain' not in content_type.lower():
                 error_msg = f"Non-text content (Content-Type: {content_type})"
-                print(f"{progress_info} Skipping {error_msg}: {title} - {url}")
-                failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                print(f"{progress_info} Skipping {error_msg}: {bookmark_title} - {url}")
+                failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
                 return None, failed_info
                 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # Extract title
+            # Extract HTML page title
             if soup.title and soup.title.string and isinstance(soup.title.string, str):
-                title = soup.title.get_text().strip()
+                html_title = soup.title.get_text().strip()
             else:
-                title = "No Title"
+                html_title = "No Title"
             
             # Remove unnecessary elements like scripts, styles, navigation, etc.
             for element in soup(['script', 'style', 'nav', 'footer', 'header', 'meta', 'link']):
@@ -1857,8 +1857,8 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             try:
                 print(f"{progress_info} {error_msg}: {title} - {url}")
             except UnicodeEncodeError:
-                print(f"{progress_info} {error_msg}: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
-            failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                print(f"{progress_info} {error_msg}: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
+            failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             return None, failed_info
     
     # If content is empty after regular crawl or for special sites, try Selenium
@@ -1874,22 +1874,31 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             print(f"{progress_info} Selenium crawl failed or content is empty: {url}")
     
     # Fix possible encoding issues
-    if title:
-        title = fix_encoding(title)
+    if html_title:
+        html_title = fix_encoding(html_title)
     else:
-        title = "No Title"
+        html_title = "No Title"
         
     if content and isinstance(content, str):
         content = fix_encoding(content)
     else:
         content = ""
-    
+
+    # Prepend HTML title to content with appropriate formatting
+    if html_title and html_title != "No Title":
+        content = f"<h1>{html_title}</h1>\n\n{content}"
+
     # Check if content is empty
     if not content or not content.strip():
-        error_msg = "Extracted content is empty"
-        print(f"{progress_info} {error_msg}: {title} - {url}")
-        failed_info = {"url": url, "title": title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
-        return None, failed_info
+        # If we have a valid HTML title, use it as content and log a warning
+        if html_title and html_title != "No Title":
+            content = html_title
+            print(f"{progress_info} Warning: Using HTML title as content (no webpage content available): {bookmark_title} - {url}")
+        else:
+            error_msg = "Extracted content is empty and no HTML title available"
+            print(f"{progress_info} {error_msg}: {bookmark_title} - {url}")
+            failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            return None, failed_info
             
     # Check for content deduplication using LMDB (transactional)
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
@@ -1921,17 +1930,17 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
 
     # Create a copy of the bookmark including the content
     bookmark_with_content = bookmark.copy()
-    bookmark_with_content["title"] = title
+    bookmark_with_content["title"] = bookmark_title  # Preserve original bookmark title
     bookmark_with_content["content"] = content
     bookmark_with_content["content_length"] = len(content)
     bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     bookmark_with_content["crawl_method"] = crawl_method
 
     try:
-        print(f"{progress_info} Successfully crawled: {title} - {url}, content length: {len(content)} characters")
+        print(f"{progress_info} Successfully crawled: {bookmark_title} - {url}, content length: {len(content)} characters")
     except UnicodeEncodeError:
         # Handle Unicode encoding issues on Windows console
-        safe_title = title.encode('utf-8', 'replace').decode('utf-8')
+        safe_title = bookmark_title.encode('utf-8', 'replace').decode('utf-8')
         print(f"{progress_info} Successfully crawled: {safe_title} - {url}, content length: {len(content)} characters")
     return bookmark_with_content, None
 

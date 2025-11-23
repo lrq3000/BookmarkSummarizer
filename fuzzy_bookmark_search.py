@@ -199,8 +199,8 @@ def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB
     except lmdb.BadRslotError as e:
         print(f"LMDB BadRslotError during {operation_name}: Reader slot corruption: {e}")
         use_fallback = True
-    except lmdb.BadValSizeError as e:
-        print(f"LMDB BadValSizeError during {operation_name}: Value too large: {e}")
+    except lmdb.BadValsizeError as e:
+        print(f"LMDB BadValsizeError during {operation_name}: Value too large: {e}")
         use_fallback = True
     except Exception as e:
         print(f"{operation_name} failed: {e}")
@@ -295,11 +295,7 @@ def load_bookmarks_data(lmdb_path='bookmark_index.lmdb'):
     global bookmarks_db, use_fallback
 
     # Try to load from LMDB first
-    bookmarks_list = safe_lmdb_operation(
-        lambda: load_bookmarks_from_lmdb(),
-        lambda: fallback_bookmarks.copy(),
-        "loading bookmarks from LMDB"
-    )
+    bookmarks_list = load_bookmarks_from_lmdb()
 
     if bookmarks_list is None:
         bookmarks_list = []
@@ -1057,7 +1053,7 @@ def main():
     lmdb_readonly = args.lmdb_readonly or bool(os.environ.get('LMDB_READONLY', False))
 
     print("Initializing LMDB database...")
-    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=lmdb_readonly)
+    init_lmdb(map_size=lmdb_map_size, max_dbs=lmdb_max_dbs, readonly=True)
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.

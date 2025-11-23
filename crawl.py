@@ -1794,22 +1794,22 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     
     # Use Selenium directly for Zhihu links
     if "zhihu.com" in url:
-        print(f"{progress_info} Detected Zhihu link, using Selenium directly for crawl: {title} - {url}")
-        content = fetch_with_selenium(url, current_idx, total_count, title)
+        print(f"{progress_info} Detected Zhihu link, using Selenium directly for crawl: {bookmark_title} - {url}")
+        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title)
         crawl_method = "selenium"
-        
+
         # Record crawl result
         if content:
-            print(f"{progress_info} Successfully crawled Zhihu content: {title} - {url}, content length: {len(content)} characters")
+            print(f"{progress_info} Successfully crawled Zhihu content: {bookmark_title} - {url}, content length: {len(content)} characters")
         else:
-            print(f"{progress_info} Failed to crawl Zhihu content: {title} - {url}")
-            return None, {"url": url, "title": title, "reason": "Zhihu content crawl failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            print(f"{progress_info} Failed to crawl Zhihu content: {bookmark_title} - {url}")
+            return None, {"url": url, "title": bookmark_title, "reason": "Zhihu content crawl failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
     else:
         try:
             try:
-                print(f"{progress_info} Starting crawl: {title} - {url}")
+                print(f"{progress_info} Starting crawl: {bookmark_title} - {url}")
             except UnicodeEncodeError:
-                print(f"{progress_info} Starting crawl: {title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                print(f"{progress_info} Starting crawl: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
             session = create_session()
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -1855,7 +1855,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
         except Exception as e:
             error_msg = f"Request failed: {str(e)}"
             try:
-                print(f"{progress_info} {error_msg}: {title} - {url}")
+                print(f"{progress_info} {error_msg}: {bookmark_title} - {url}")
             except UnicodeEncodeError:
                 print(f"{progress_info} {error_msg}: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
             failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -1863,8 +1863,8 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     
     # If content is empty after regular crawl or for special sites, try Selenium
     if content is None or (isinstance(content, str) and not content.strip()):
-        print(f"{progress_info} Regular crawl content is empty, attempting Selenium: {title} - {url}")
-        content = fetch_with_selenium(url, current_idx, total_count, title)
+        print(f"{progress_info} Regular crawl content is empty, attempting Selenium: {bookmark_title} - {url}")
+        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title)
         crawl_method = "selenium"
         
         # Record Selenium crawl result
@@ -1906,7 +1906,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     with content_lock:
         def check_content_deduplication(txn):
             if txn.get(content_hash.encode('utf-8'), db=content_hashes_db):
-                print(f"{progress_info} Skipping duplicate content: {title} - {url} (hash: {content_hash[:16]}...)")
+                print(f"{progress_info} Skipping duplicate content: {bookmark_title} - {url} (hash: {content_hash[:16]}...)")
                 return True  # Duplicate found
             print(f"{progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
             txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
@@ -1922,7 +1922,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
             if use_fallback:
                 # Use fallback in-memory check
                 if content_hash in fallback_content_hashes:
-                    print(f"{progress_info} Skipping duplicate content (fallback): {title} - {url}")
+                    print(f"{progress_info} Skipping duplicate content (fallback): {bookmark_title} - {url}")
                     return None, None
                 fallback_content_hashes.add(content_hash)
             else:

@@ -219,6 +219,12 @@ generate_summary=true  # whether to generate summaries
 
 Pull Requests are welcome! For any issues or suggestions, please create an Issue.
 
+## Author
+
+Originally created by [wyj/sologuy](https://github.com/sologuy/BookmarkSummarizer/).
+
+Development of new features and maintenance is done since Novembre 2025 by [Stephen Karl Larroque](https://github.com/lrq3000/BookmarkSummarizer/).
+
 ## 📄 License
 
 This project is licensed under the [Apache License 2.0](LICENSE).

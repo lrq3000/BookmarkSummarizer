@@ -1612,18 +1612,21 @@ def init_webdriver():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    
+
     # Add more user agent information
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
-    
+
     # Disable image loading to improve speed
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
-    
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    return driver
+
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        return driver
+    except Exception as e:
+        logger.warning(f"Chrome/Chromium webdriver initialization failed: {e}. Skipping Selenium-based crawling.")
+        return None
 
 # Fetch dynamic content using Selenium
 def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title"):
@@ -1639,9 +1642,11 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
     options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36')
     
     try:
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        
+        driver = init_webdriver()
+        if driver is None:
+            print(f"{progress_info} Selenium not available, skipping crawl for: {title} - {url}")
+            return None
+
         print(f"{progress_info} Starting Selenium crawl for: {title} - {url}")
         driver.get(url)
         

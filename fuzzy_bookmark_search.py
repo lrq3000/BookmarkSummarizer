@@ -338,10 +338,17 @@ def load_bookmarks_from_lmdb():
     """
     bookmarks = []
     def load_operation(txn):
-        cursor = txn.cursor()
+        cursor = txn.cursor(db=bookmarks_db)
+        count = 0
         for key, value in cursor:
-            bookmark = pickle.loads(value)
-            bookmarks.append(bookmark)
+            count += 1
+            try:
+                bookmark = pickle.loads(value)
+                bookmarks.append(bookmark)
+            except Exception as e:
+                print(f"Error loading bookmark at position {count}, key: {key[:50] if key else 'None'}..., error: {e}")
+                # Skip corrupted entries
+                continue
         return bookmarks
 
     return safe_lmdb_operation(load_operation, lambda: fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)

@@ -8,8 +8,8 @@ import sys
 import os
 import json
 
-# Add current directory to path to import fuzzy_bookmark_search functions
-sys.path.insert(0, os.path.dirname(__file__))
+# Add parent directory to path to import fuzzy_bookmark_search functions
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fuzzy_bookmark_search import load_bookmarks_data, init_lmdb, cleanup_lmdb, search_bookmarks
 

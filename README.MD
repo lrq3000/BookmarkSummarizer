@@ -19,6 +19,8 @@ BookmarkSummarizer is a powerful tool that crawls your browsers' bookmarks, gene
 - 🌐 **Multiple Model Support**: Compatible with OpenAI, Deepseek, Qwen, and Ollama offline models
 - 💾 **Incremental Update And Checkpoint Recovery**: Update the database with new bookmarks or continue processing after interruptions without losing completed work
 - 📊 **Detailed Logging**: Clear progress and status reports for monitoring and debugging
+- **Made to scale**: Start small with hundreds of bookmarks in a <10MB LMDB database, and with incremental updates you can scale to thousands of bookmarks of a few GB using just a fraction of the RAM thanks to the out-of-core database saved on-disk, up to millions of bookmarks with a LMDB database of several TBs using only a few GBs of memory to load during crawling. The fuzzy search engine further improves scaling by building another fuzzy search Whoosh database much smaller in size, so that searching bookmarks content, URL, titles or summaries is blazingly fast with negligible RAM footprint. 
+- **Modular architecture**: custom parsers can be added without modifying the core logic by adding python files in custom_parsers. For example, custom parsers are provided to extract YouTube transcripts as content to summarize, and suspended tabs that got bookmarked are transparently unsuspended to fetch the true target page content.
 
 ## 🚀 Quick Start
 

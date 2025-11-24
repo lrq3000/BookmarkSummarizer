@@ -33,134 +33,390 @@ import json
 import pickle
 import sys
 
-# LMDB database and persistent structures for on-disk indexing
-# LMDB provides memory-mapped database with efficient key-value storage
-# This replaces in-memory sets with disk-based storage for scalability
-lmdb_path = os.path.expanduser("./bookmark_index.lmdb")
-lmdb_env = None
-bookmarks_db = None  # LMDB database for storing bookmarks
-domain_index_db = None  # LMDB database for domain-based secondary indexing
-date_index_db = None  # LMDB database for date-based secondary indexing
-
-
-# In-memory fallback structures for graceful degradation
-fallback_bookmarks = []
-use_fallback = False
-
-# Open LMDB database and persistent structures for on-disk indexing
-# LMDB uses memory-mapped database for efficient key-value storage
-def lmdb_open(no_update=False):
+class FuzzyBookmarkSearch:
     """
-    Open LMDB database for deduplication and storage in read-only mode.
-
-    This function sets up the LMDB environment and opens the bookmarks database.
-    Checks if the database exists before attempting to open it.
-
-    Parameters:
-        no_update (bool): Allow proceeding without LMDB if database doesn't exist. Defaults to False.
+    Class to encapsulate the fuzzy bookmark search functionality and eliminate global variables.
     """
-    global lmdb_env, bookmarks_db, domain_index_db, date_index_db, use_fallback
 
-    if not os.path.exists(lmdb_path):
-        if no_update:
-            use_fallback = True
-            return
-        else:
-            print("LMDB database not found. Run crawl.py first or use --no-update to proceed without LMDB.")
-            sys.exit(1)
+    def __init__(self, lmdb_path=None):
+        if lmdb_path is None:
+            lmdb_path = os.path.expanduser("./bookmark_index.lmdb")
+        self.lmdb_path = lmdb_path
+        self.lmdb_env = None
+        self.bookmarks_db = None  # LMDB database for storing bookmarks
+        self.domain_index_db = None  # LMDB database for domain-based secondary indexing
+        self.date_index_db = None  # LMDB database for date-based secondary indexing
+        self.fallback_bookmarks = []
+        self.use_fallback = False
 
-    try:
-        lmdb_env = lmdb.open(lmdb_path, readonly=True)
+    def lmdb_open(self, no_update=False):
+        """
+        Open LMDB database for deduplication and storage in read-only mode.
 
-        bookmarks_db = lmdb_env.open_db(b'bookmarks')
-        domain_index_db = lmdb_env.open_db(b'domain_index')
-        date_index_db = lmdb_env.open_db(b'date_index')
+        This function sets up the LMDB environment and opens the bookmarks database.
+        Checks if the database exists before attempting to open it.
 
-        print(f"Opened LMDB database at {lmdb_path} (readonly=True)")
+        Parameters:
+            no_update (bool): Allow proceeding without LMDB if database doesn't exist. Defaults to False.
+        """
+        if not os.path.exists(self.lmdb_path):
+            if no_update:
+                self.use_fallback = True
+                return
+            else:
+                print("LMDB database not found. Run crawl.py first or use --no-update to proceed without LMDB.")
+                sys.exit(1)
 
-    except Exception as e:
-        print(f"Error opening LMDB: {e}")
-        use_fallback = True
-
-        # Cleanup on failure
         try:
-            if lmdb_env:
-                lmdb_env.close()
-        except Exception as cleanup_e:
-            print(f"Error during LMDB cleanup: {cleanup_e}")
+            self.lmdb_env = lmdb.open(self.lmdb_path, readonly=True)
 
-        print("Falling back to in-memory structures for data integrity")
+            self.bookmarks_db = self.lmdb_env.open_db(b'bookmarks')
+            self.domain_index_db = self.lmdb_env.open_db(b'domain_index')
+            self.date_index_db = self.lmdb_env.open_db(b'date_index')
 
-# Safe LMDB operations with error handling and transaction management
-def safe_lmdb_operation(operation_func, fallback_func=None, operation_name="LMDB operation", readonly=False):
-    """
-    Perform an LMDB operation with error handling, transaction management, and fallback support.
+            print(f"Opened LMDB database at {self.lmdb_path} (readonly=True)")
 
-    Parameters:
-        operation_func (callable): Function performing the LMDB operation
-        fallback_func (callable, optional): Fallback function if LMDB fails
-        operation_name (str): Name of the operation for logging
-        readonly (bool): Whether this is a read-only operation
+        except Exception as e:
+            print(f"Error opening LMDB: {e}")
+            self.use_fallback = True
 
-    Returns:
-        Any: Result of the operation or fallback
-    """
-    global use_fallback
+            # Cleanup on failure
+            try:
+                if self.lmdb_env:
+                    self.lmdb_env.close()
+            except Exception as cleanup_e:
+                print(f"Error during LMDB cleanup: {cleanup_e}")
 
-    if use_fallback:
+            print("Falling back to in-memory structures for data integrity")
+
+    def safe_lmdb_operation(self, operation_func, fallback_func=None, operation_name="LMDB operation", readonly=False):
+        """
+        Perform an LMDB operation with error handling, transaction management, and fallback support.
+
+        Parameters:
+            operation_func (callable): Function performing the LMDB operation
+            fallback_func (callable, optional): Fallback function if LMDB fails
+            operation_name (str): Name of the operation for logging
+            readonly (bool): Whether this is a read-only operation
+
+        Returns:
+            Any: Result of the operation or fallback
+        """
+        if self.use_fallback:
+            if fallback_func:
+                try:
+                    return fallback_func()
+                except Exception as e:
+                    print(f"Fallback {operation_name} failed: {e}")
+                    return None
+            return None
+
+        try:
+            # Execute operation with proper transaction scoping
+            with self.lmdb_env.begin(write=not readonly) as txn:
+                result = operation_func(txn)
+            return result
+        except lmdb.DiskError as e:
+            print(f"LMDB DiskError during {operation_name}: Disk I/O error: {e}")
+            self.use_fallback = True
+        except lmdb.InvalidError as e:
+            print(f"LMDB InvalidError during {operation_name}: Invalid parameter or corrupted data: {e}")
+            self.use_fallback = True
+        except lmdb.BadTxnError as e:
+            print(f"LMDB BadTxnError during {operation_name}: Transaction error: {e}")
+            self.use_fallback = True
+        except lmdb.BadRslotError as e:
+            print(f"LMDB BadRslotError during {operation_name}: Reader slot corruption: {e}")
+            self.use_fallback = True
+        except lmdb.BadValsizeError as e:
+            print(f"LMDB BadValsizeError during {operation_name}: Value too large: {e}")
+            self.use_fallback = True
+        except Exception as e:
+            print(f"{operation_name} failed: {e}")
+            self.use_fallback = True
+
+        # Attempt fallback if operation failed
         if fallback_func:
             try:
+                print(f"Attempting fallback for {operation_name}")
                 return fallback_func()
-            except Exception as e:
-                print(f"Fallback {operation_name} failed: {e}")
-                return None
+            except Exception as fallback_e:
+                print(f"Fallback {operation_name} failed: {fallback_e}")
         return None
 
-    try:
-        # Execute operation with proper transaction scoping
-        with lmdb_env.begin(write=not readonly) as txn:
-            result = operation_func(txn)
-        return result
-    except lmdb.DiskError as e:
-        print(f"LMDB DiskError during {operation_name}: Disk I/O error: {e}")
-        use_fallback = True
-    except lmdb.InvalidError as e:
-        print(f"LMDB InvalidError during {operation_name}: Invalid parameter or corrupted data: {e}")
-        use_fallback = True
-    except lmdb.BadTxnError as e:
-        print(f"LMDB BadTxnError during {operation_name}: Transaction error: {e}")
-        use_fallback = True
-    except lmdb.BadRslotError as e:
-        print(f"LMDB BadRslotError during {operation_name}: Reader slot corruption: {e}")
-        use_fallback = True
-    except lmdb.BadValsizeError as e:
-        print(f"LMDB BadValsizeError during {operation_name}: Value too large: {e}")
-        use_fallback = True
-    except Exception as e:
-        print(f"{operation_name} failed: {e}")
-        use_fallback = True
-
-    # Attempt fallback if operation failed
-    if fallback_func:
+    def cleanup_lmdb(self):
+        """
+        Properly close LMDB environment to ensure data integrity.
+        """
         try:
-            print(f"Attempting fallback for {operation_name}")
-            return fallback_func()
-        except Exception as fallback_e:
-            print(f"Fallback {operation_name} failed: {fallback_e}")
-    return None
+            if self.lmdb_env:
+                self.lmdb_env.close()
+            print("LMDB cleanup completed")
+        except Exception as e:
+            print(f"Error during LMDB cleanup: {e}")
 
-# Cleanup LMDB resources
-def cleanup_lmdb():
-    """
-    Properly close LMDB environment to ensure data integrity.
-    """
-    global lmdb_env
-    try:
-        if lmdb_env:
-            lmdb_env.close()
-        print("LMDB cleanup completed")
-    except Exception as e:
-        print(f"Error during LMDB cleanup: {e}")
+    def load_bookmarks_data(self):
+        """
+        Load bookmark data from an LMDB database.
+
+        This function loads bookmark data from the LMDB bookmarks database, handling cases where
+        the database doesn't exist or is corrupted. It yields each bookmark as a dict,
+        with preprocessing to generate a unique key and normalize text fields.
+
+        Yields:
+            dict: Preprocessed bookmark dictionary with fields like title, url, content, summary, key.
+        """
+        # Try to load from LMDB first
+        bookmarks_list = self.load_bookmarks_from_lmdb()
+
+        if bookmarks_list is None:
+            bookmarks_list = []
+
+        # Perform preliminary pass to count total records for progress tracking
+        total_records = len(bookmarks_list)
+
+        if total_records == 0:
+            print("Warning: No bookmarks found in LMDB database. Make sure to run crawl.py first to populate the database.")
+            return
+
+        for bookmark in bookmarks_list:
+            # Preprocess: generate key, normalize text
+            guid = bookmark.get('guid', '')
+            id_val = bookmark.get('id', '')
+            url = bookmark.get('url', '').strip()
+            # Treat 'N/A' as missing value for key generation
+            key = (guid if guid != 'N/A' else '') or (id_val if id_val != 'N/A' else '') or url
+            title = (bookmark.get('title') or bookmark.get('name', '')).strip()
+            content = (bookmark.get('content', '')).strip()
+            summary = (bookmark.get('summary', '')).strip()
+
+            # Limit content length to prevent index bloat
+            if len(content) > 10000:
+                content = content[:10000] + '...'
+
+            yield {
+                'key': key,
+                'title': title,
+                'url': url,
+                'content': content,
+                'summary': summary,
+                'total_records': total_records  # Include total count for progress tracking
+            }
+
+    def load_bookmarks_from_lmdb(self):
+        """
+        Helper function to load bookmarks from LMDB within a transaction.
+        """
+        bookmarks = []
+        def load_operation(txn):
+            cursor = txn.cursor(db=self.bookmarks_db)
+            count = 0
+            for key, value in cursor:
+                count += 1
+                try:
+                    bookmark = pickle.loads(value)
+                    bookmarks.append(bookmark)
+                except Exception as e:
+                    print(f"Error loading bookmark at position {count}, key: {key[:50] if key else 'None'}..., error: {e}")
+                    # Skip corrupted entries
+                    continue
+            return bookmarks
+
+        return self.safe_lmdb_operation(load_operation, lambda: self.fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)
+
+    def query_bookmarks_by_domain(self, domain, limit=50):
+        """
+        Query bookmarks by domain using lazy lookup from secondary index.
+
+        This function uses the domain secondary index to efficiently find bookmarks
+        for a specific domain, then performs lazy lookup to retrieve full bookmark data.
+
+        Parameters:
+            domain (str): The domain to query (e.g., 'example.com')
+            limit (int): Maximum number of bookmarks to return
+
+        Returns:
+            list: List of bookmark dictionaries for the domain
+        """
+        def query_operation(txn):
+            # Get bookmark keys for this domain from secondary index
+            domain_key = domain.lower().encode('utf-8')
+            keys_data = txn.get(domain_key, db=self.domain_index_db)
+
+            if not keys_data:
+                return []
+
+            # Deserialize the set of bookmark keys
+            bookmark_keys = pickle.loads(keys_data)
+
+            # Lazy lookup: retrieve full bookmark data for each key
+            bookmarks = []
+            for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
+                bookmark_data = txn.get(key_bytes, db=self.bookmarks_db)
+                if bookmark_data:
+                    bookmark = pickle.loads(bookmark_data)
+                    bookmarks.append(bookmark)
+
+            return bookmarks
+
+        return self.safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by domain", readonly=True)
+
+    def query_bookmarks_by_date(self, date, limit=50):
+        """
+        Query bookmarks by date using lazy lookup from secondary index.
+
+        This function uses the date secondary index to efficiently find bookmarks
+        for a specific date, then performs lazy lookup to retrieve full bookmark data.
+
+        Parameters:
+            date (str): The date to query in YYYY-MM-DD format
+            limit (int): Maximum number of bookmarks to return
+
+        Returns:
+            list: List of bookmark dictionaries for the date
+        """
+        def query_operation(txn):
+            # Get bookmark keys for this date from secondary index
+            date_key = date.encode('utf-8')
+            keys_data = txn.get(date_key, db=self.date_index_db)
+
+            if not keys_data:
+                return []
+
+            # Deserialize the set of bookmark keys
+            bookmark_keys = pickle.loads(keys_data)
+
+            # Lazy lookup: retrieve full bookmark data for each key
+            bookmarks = []
+            for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
+                bookmark_data = txn.get(key_bytes, db=self.bookmarks_db)
+                if bookmark_data:
+                    bookmark = pickle.loads(bookmark_data)
+                    bookmarks.append(bookmark)
+
+            return bookmarks
+
+        return self.safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by date", readonly=True)
+
+    def get_domain_stats(self):
+        """
+        Get statistics about domains in the secondary index.
+
+        Returns:
+            dict: Dictionary with domain statistics including count of bookmarks per domain
+        """
+        def stats_operation(txn):
+            stats = {}
+            cursor = txn.cursor(db=self.domain_index_db)
+            for domain_bytes, keys_data in cursor:
+                domain = domain_bytes.decode('utf-8')
+                bookmark_keys = pickle.loads(keys_data)
+                stats[domain] = len(bookmark_keys)
+            return stats
+
+        return self.safe_lmdb_operation(stats_operation, lambda: {}, "get domain statistics", readonly=True)
+
+    def get_date_stats(self):
+        """
+        Get statistics about dates in the secondary index.
+
+        Returns:
+            dict: Dictionary with date statistics including count of bookmarks per date
+        """
+        def stats_operation(txn):
+            stats = {}
+            cursor = txn.cursor(db=self.date_index_db)
+            for date_bytes, keys_data in cursor:
+                date = date_bytes.decode('utf-8')
+                bookmark_keys = pickle.loads(keys_data)
+                stats[date] = len(bookmark_keys)
+            return stats
+
+        return self.safe_lmdb_operation(stats_operation, lambda: {}, "get date statistics", readonly=True)
+
+    def create_app(self):
+        """
+        Create and configure the FastAPI application for web interface.
+
+        This method integrates a web server into the fuzzy bookmark search module,
+        allowing users to interact with the search functionality through a browser.
+        The app serves an embedded HTML/JS frontend and provides API endpoints for search operations.
+        """
+        app = FastAPI(title="Fuzzy Bookmark Search", description="Web interface for fuzzy bookmark searching")
+
+        # Add CORS middleware to allow local access from browser
+        # CORS (Cross-Origin Resource Sharing) is necessary for web applications running locally
+        # to make requests to the same server, enabling frontend-backend communication.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # Allow all origins for local development
+            allow_credentials=True,
+            allow_methods=["*"],  # Allow all HTTP methods
+            allow_headers=["*"],  # Allow all headers
+        )
+
+        # FastAPI route to serve the HTML UI
+        @app.get("/", response_class=HTMLResponse)
+        async def serve_ui():
+            """
+            Serve the embedded HTML user interface.
+
+            This route provides the web frontend for the fuzzy bookmark search application.
+            The HTML includes a search input field and JavaScript for making API calls to perform searches.
+            """
+            return HTML_UI
+
+        # FastAPI route for search API
+        @app.post("/api/search")
+        async def api_search(request: Request):
+            """
+            API endpoint for performing fuzzy bookmark searches with pagination support.
+
+            Accepts a JSON payload with 'query', 'page', and 'page_size' fields.
+            Returns a JSON response with paginated search results, pagination metadata,
+            search execution time, and the original query.
+
+            Pagination parameters:
+            - page: Integer, 1-based page number (default: 1, min: 1)
+            - page_size: Integer, results per page (default: 20, max: 100)
+
+            Args:
+                request (Request): FastAPI request object containing JSON payload.
+
+            Returns:
+                dict: JSON response with results, pagination metadata, search_time, and query.
+
+            Raises:
+                HTTPException: If query is missing, pagination parameters are invalid, or search fails.
+            """
+            try:
+                data = await request.json()
+                query = data.get('query', '').strip()
+                page = data.get('page', 1)
+                page_size = data.get('page_size', 20)
+
+                if not query:
+                    raise HTTPException(status_code=400, detail="Query parameter is required")
+
+                # Validate pagination parameters
+                try:
+                    page = int(page)
+                    page_size = int(page_size)
+                    if page < 1 or page_size < 1 or page_size > 100:
+                        raise ValueError("Invalid pagination parameters")
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail="Invalid pagination parameters: page >= 1, 1 <= page_size <= 100")
+
+                # Perform the search with pagination
+                search_data = search_bookmarks(query, page=page, page_size=page_size)
+
+                return search_data
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+        return app
 
 
 def create_schema():
@@ -212,80 +468,6 @@ def get_or_create_index(index_dir='./whoosh_index', schema=None):
         return index.create_in(index_dir, schema)
 
 
-def load_bookmarks_data(lmdb_path='bookmark_index.lmdb'):
-    """
-    Load bookmark data from an LMDB database.
-
-    This function loads bookmark data from the LMDB bookmarks database, handling cases where
-    the database doesn't exist or is corrupted. It yields each bookmark as a dict,
-    with preprocessing to generate a unique key and normalize text fields.
-
-    Args:
-        lmdb_path (str): Path to the LMDB database directory.
-
-    Yields:
-        dict: Preprocessed bookmark dictionary with fields like title, url, content, summary, key.
-    """
-    global bookmarks_db, use_fallback
-
-    # Try to load from LMDB first
-    bookmarks_list = load_bookmarks_from_lmdb()
-
-    if bookmarks_list is None:
-        bookmarks_list = []
-
-    # Perform preliminary pass to count total records for progress tracking
-    total_records = len(bookmarks_list)
-
-    if total_records == 0:
-        print("Warning: No bookmarks found in LMDB database. Make sure to run crawl.py first to populate the database.")
-        return
-
-    for bookmark in bookmarks_list:
-        # Preprocess: generate key, normalize text
-        guid = bookmark.get('guid', '')
-        id_val = bookmark.get('id', '')
-        url = bookmark.get('url', '').strip()
-        # Treat 'N/A' as missing value for key generation
-        key = (guid if guid != 'N/A' else '') or (id_val if id_val != 'N/A' else '') or url
-        title = (bookmark.get('title') or bookmark.get('name', '')).strip()
-        content = (bookmark.get('content', '')).strip()
-        summary = (bookmark.get('summary', '')).strip()
-
-        # Limit content length to prevent index bloat
-        if len(content) > 10000:
-            content = content[:10000] + '...'
-
-        yield {
-            'key': key,
-            'title': title,
-            'url': url,
-            'content': content,
-            'summary': summary,
-            'total_records': total_records  # Include total count for progress tracking
-        }
-
-
-def load_bookmarks_from_lmdb():
-    """
-    Helper function to load bookmarks from LMDB within a transaction.
-    """
-    bookmarks = []
-    def load_operation(txn):
-        cursor = txn.cursor(db=bookmarks_db)
-        count = 0
-        for key, value in cursor:
-            count += 1
-            try:
-                bookmark = pickle.loads(value)
-                bookmarks.append(bookmark)
-            except Exception as e:
-                print(f"Error loading bookmark at position {count}, key: {key[:50] if key else 'None'}..., error: {e}")
-                # Skip corrupted entries
-                continue
-        return bookmarks
-
-    return safe_lmdb_operation(load_operation, lambda: fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)
 
 def index_bookmarks(bookmarks_generator, index_dir='./whoosh_index', update=False):
     """
@@ -531,138 +713,97 @@ def search_bookmarks(query_str, index_dir='./whoosh_index', limit=10, page=1, pa
         }
 
 
-def query_bookmarks_by_domain(domain, limit=50):
-    """
-    Query bookmarks by domain using lazy lookup from secondary index.
-
-    This function uses the domain secondary index to efficiently find bookmarks
-    for a specific domain, then performs lazy lookup to retrieve full bookmark data.
-
-    Parameters:
-        domain (str): The domain to query (e.g., 'example.com')
-        limit (int): Maximum number of bookmarks to return
-
-    Returns:
-        list: List of bookmark dictionaries for the domain
-    """
-    def query_operation(txn):
-        # Get bookmark keys for this domain from secondary index
-        domain_key = domain.lower().encode('utf-8')
-        keys_data = txn.get(domain_key, db=domain_index_db)
-
-        if not keys_data:
-            return []
-
-        # Deserialize the set of bookmark keys
-        bookmark_keys = pickle.loads(keys_data)
-
-        # Lazy lookup: retrieve full bookmark data for each key
-        bookmarks = []
-        for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
-            bookmark_data = txn.get(key_bytes, db=bookmarks_db)
-            if bookmark_data:
-                bookmark = pickle.loads(bookmark_data)
-                bookmarks.append(bookmark)
-
-        return bookmarks
-
-    return safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by domain", readonly=True)
 
 
-def query_bookmarks_by_date(date, limit=50):
-    """
-    Query bookmarks by date using lazy lookup from secondary index.
-
-    This function uses the date secondary index to efficiently find bookmarks
-    for a specific date, then performs lazy lookup to retrieve full bookmark data.
-
-    Parameters:
-        date (str): The date to query in YYYY-MM-DD format
-        limit (int): Maximum number of bookmarks to return
-
-    Returns:
-        list: List of bookmark dictionaries for the date
-    """
-    def query_operation(txn):
-        # Get bookmark keys for this date from secondary index
-        date_key = date.encode('utf-8')
-        keys_data = txn.get(date_key, db=date_index_db)
-
-        if not keys_data:
-            return []
-
-        # Deserialize the set of bookmark keys
-        bookmark_keys = pickle.loads(keys_data)
-
-        # Lazy lookup: retrieve full bookmark data for each key
-        bookmarks = []
-        for key_bytes in list(bookmark_keys)[:limit]:  # Limit the number of lookups
-            bookmark_data = txn.get(key_bytes, db=bookmarks_db)
-            if bookmark_data:
-                bookmark = pickle.loads(bookmark_data)
-                bookmarks.append(bookmark)
-
-        return bookmarks
-
-    return safe_lmdb_operation(query_operation, lambda: [], "query bookmarks by date", readonly=True)
 
 
-def get_domain_stats():
-    """
-    Get statistics about domains in the secondary index.
-
-    Returns:
-        dict: Dictionary with domain statistics including count of bookmarks per domain
-    """
-    def stats_operation(txn):
-        stats = {}
-        cursor = txn.cursor(db=domain_index_db)
-        for domain_bytes, keys_data in cursor:
-            domain = domain_bytes.decode('utf-8')
-            bookmark_keys = pickle.loads(keys_data)
-            stats[domain] = len(bookmark_keys)
-        return stats
-
-    return safe_lmdb_operation(stats_operation, lambda: {}, "get domain statistics", readonly=True)
 
 
-def get_date_stats():
-    """
-    Get statistics about dates in the secondary index.
-
-    Returns:
-        dict: Dictionary with date statistics including count of bookmarks per date
-    """
-    def stats_operation(txn):
-        stats = {}
-        cursor = txn.cursor(db=date_index_db)
-        for date_bytes, keys_data in cursor:
-            date = date_bytes.decode('utf-8')
-            bookmark_keys = pickle.loads(keys_data)
-            stats[date] = len(bookmark_keys)
-        return stats
-
-    return safe_lmdb_operation(stats_operation, lambda: {}, "get date statistics", readonly=True)
 
 
-# FastAPI application setup for web interface
-# This section integrates a web server into the fuzzy bookmark search module,
-# allowing users to interact with the search functionality through a browser.
-# The app serves an embedded HTML/JS frontend and provides API endpoints for search operations.
+def create_app(self):
+        """
+        Create and configure the FastAPI application for web interface.
 
-# Initialize FastAPI app instance
-app = FastAPI(title="Fuzzy Bookmark Search", description="Web interface for fuzzy bookmark searching")
+        This method integrates a web server into the fuzzy bookmark search module,
+        allowing users to interact with the search functionality through a browser.
+        The app serves an embedded HTML/JS frontend and provides API endpoints for search operations.
+        """
+        app = FastAPI(title="Fuzzy Bookmark Search", description="Web interface for fuzzy bookmark searching")
 
-# Add CORS middleware to allow local access from browser
-# CORS (Cross-Origin Resource Sharing) is necessary for web applications running locally
-# to make requests to the same server, enabling frontend-backend communication.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for local development
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
-)
+        # Add CORS middleware to allow local access from browser
+        # CORS (Cross-Origin Resource Sharing) is necessary for web applications running locally
+        # to make requests to the same server, enabling frontend-backend communication.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # Allow all origins for local development
+            allow_credentials=True,
+            allow_methods=["*"],  # Allow all HTTP methods
+            allow_headers=["*"],  # Allow all headers
+        )
+
+        # FastAPI route to serve the HTML UI
+        @app.get("/", response_class=HTMLResponse)
+        async def serve_ui():
+            """
+            Serve the embedded HTML user interface.
+
+            This route provides the web frontend for the fuzzy bookmark search application.
+            The HTML includes a search input field and JavaScript for making API calls to perform searches.
+            """
+            return HTML_UI
+
+        # FastAPI route for search API
+        @app.post("/api/search")
+        async def api_search(request: Request):
+            """
+            API endpoint for performing fuzzy bookmark searches with pagination support.
+
+            Accepts a JSON payload with 'query', 'page', and 'page_size' fields.
+            Returns a JSON response with paginated search results, pagination metadata,
+            search execution time, and the original query.
+
+            Pagination parameters:
+            - page: Integer, 1-based page number (default: 1, min: 1)
+            - page_size: Integer, results per page (default: 20, max: 100)
+
+            Args:
+                request (Request): FastAPI request object containing JSON payload.
+
+            Returns:
+                dict: JSON response with results, pagination metadata, search_time, and query.
+
+            Raises:
+                HTTPException: If query is missing, pagination parameters are invalid, or search fails.
+            """
+            try:
+                data = await request.json()
+                query = data.get('query', '').strip()
+                page = data.get('page', 1)
+                page_size = data.get('page_size', 20)
+
+                if not query:
+                    raise HTTPException(status_code=400, detail="Query parameter is required")
+
+                # Validate pagination parameters
+                try:
+                    page = int(page)
+                    page_size = int(page_size)
+                    if page < 1 or page_size < 1 or page_size > 100:
+                        raise ValueError("Invalid pagination parameters")
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail="Invalid pagination parameters: page >= 1, 1 <= page_size <= 100")
+
+                # Perform the search with pagination
+                search_data = search_bookmarks(query, page=page, page_size=page_size)
+
+                return search_data
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+        return app
 
 # Embedded HTML/JS UI as a string
 # This enhanced web interface provides a search input field, displays results with pagination,
@@ -897,70 +1038,6 @@ HTML_UI = """
 </html>
 """
 
-# FastAPI route to serve the HTML UI
-# This endpoint serves the embedded HTML interface when users access the root URL.
-# It returns the HTML content with proper content type for browser rendering.
-@app.get("/", response_class=HTMLResponse)
-async def serve_ui():
-    """
-    Serve the embedded HTML user interface.
-
-    This route provides the web frontend for the fuzzy bookmark search application.
-    The HTML includes a search input field and JavaScript for making API calls to perform searches.
-    """
-    return HTML_UI
-
-# FastAPI route for search API
-# This POST endpoint accepts search queries and returns JSON results with pagination support.
-# It integrates the updated search_bookmarks function into the web API with pagination parameters.
-@app.post("/api/search")
-async def api_search(request: Request):
-    """
-    API endpoint for performing fuzzy bookmark searches with pagination support.
-
-    Accepts a JSON payload with 'query', 'page', and 'page_size' fields.
-    Returns a JSON response with paginated search results, pagination metadata,
-    search execution time, and the original query.
-
-    Pagination parameters:
-    - page: Integer, 1-based page number (default: 1, min: 1)
-    - page_size: Integer, results per page (default: 20, max: 100)
-
-    Args:
-        request (Request): FastAPI request object containing JSON payload.
-
-    Returns:
-        dict: JSON response with results, pagination metadata, search_time, and query.
-
-    Raises:
-        HTTPException: If query is missing, pagination parameters are invalid, or search fails.
-    """
-    try:
-        data = await request.json()
-        query = data.get('query', '').strip()
-        page = data.get('page', 1)
-        page_size = data.get('page_size', 20)
-
-        if not query:
-            raise HTTPException(status_code=400, detail="Query parameter is required")
-
-        # Validate pagination parameters
-        try:
-            page = int(page)
-            page_size = int(page_size)
-            if page < 1 or page_size < 1 or page_size > 100:
-                raise ValueError("Invalid pagination parameters")
-        except (ValueError, TypeError):
-            raise HTTPException(status_code=400, detail="Invalid pagination parameters: page >= 1, 1 <= page_size <= 100")
-
-        # Perform the search with pagination
-        search_data = search_bookmarks(query, page=page, page_size=page_size)
-
-        return search_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 def main():
     """
@@ -981,9 +1058,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Create the search instance
+    search = FuzzyBookmarkSearch(args.lmdb_path)
 
     print("Opening LMDB database...")
-    lmdb_open(no_update=args.no_update)
+    search.lmdb_open(no_update=args.no_update)
 
     # Ensure bookmarks are indexed before starting the server
     # This step is necessary for the search functionality to work.
@@ -995,7 +1074,7 @@ def main():
                 print("Updating existing index...")
             else:
                 print("Creating new index...")
-            bookmarks_gen = load_bookmarks_data(args.lmdb_path)
+            bookmarks_gen = search.load_bookmarks_data()
             index_bookmarks(bookmarks_gen, args.index_dir, update=not args.no_update)
             print("Indexing complete.")
         else:
@@ -1014,13 +1093,40 @@ def main():
         print(f"Error accessing index for count: {e}")
 
     # Cleanup LMDB resources before starting server
-    cleanup_lmdb()
+    search.cleanup_lmdb()
 
     # Launch the FastAPI server using uvicorn
     # The server will be accessible at the specified port
     # This provides both the web UI and API endpoints for bookmark searching.
     print(f"Starting FastAPI server on http://localhost:{args.port}")
+    app = search.create_app()
     uvicorn.run(app, host="127.0.0.1", port=args.port)
+
+
+# Backward compatibility for existing code and tests
+_default_search = FuzzyBookmarkSearch()
+
+def lmdb_open(no_update=False):
+    _default_search.lmdb_open(no_update)
+
+def load_bookmarks_data(lmdb_path='bookmark_index.lmdb'):
+    _default_search.lmdb_path = lmdb_path
+    return _default_search.load_bookmarks_data()
+
+def cleanup_lmdb():
+    _default_search.cleanup_lmdb()
+
+def query_bookmarks_by_domain(domain, limit=50):
+    return _default_search.query_bookmarks_by_domain(domain, limit)
+
+def query_bookmarks_by_date(date, limit=50):
+    return _default_search.query_bookmarks_by_date(date, limit)
+
+def get_domain_stats():
+    return _default_search.get_domain_stats()
+
+def get_date_stats():
+    return _default_search.get_date_stats()
 
 
 if __name__ == "__main__":

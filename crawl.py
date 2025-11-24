@@ -722,10 +722,16 @@ def load_custom_parsers():
         list: List of callable parser functions, sorted alphabetically by filename.
     """
     parsers = []
-    parsers_dir = os.path.join(os.path.dirname(__file__), 'custom_parsers')
+    if getattr(sys, 'frozen', False):
+        # PyInstaller creates a temporary bundle directory at sys._MEIPASS
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    parsers_dir = os.path.join(base_dir, 'custom_parsers')
 
     if not os.path.exists(parsers_dir):
-        print("custom_parsers/ directory not found, skipping custom parsers")
+        print(f"custom_parsers/ directory not found at {parsers_dir}, skipping custom parsers")
         return parsers
 
     # Iterate through all .py files in custom_parsers/

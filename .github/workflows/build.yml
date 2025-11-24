@@ -34,5 +34,5 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: BookmarkSummarizer-${{ matrix.os }}
-        path: dist/BookmarkSummarizer${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+        name: BookmarkSummarizer-Binaries-${{ matrix.os }}
+        path: dist/

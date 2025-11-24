@@ -183,3 +183,6 @@ failed_urls.txt
 
 # 不忽略的文件
 !requirements.txt
+*.lmdb
+*.lmdb/
+bookmark_index.lmdb/

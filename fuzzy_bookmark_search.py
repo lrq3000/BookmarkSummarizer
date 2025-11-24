@@ -25,6 +25,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from tqdm import tqdm
+import multiprocessing
 
 # LMDB imports for persistent storage
 import lmdb
@@ -1023,4 +1024,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

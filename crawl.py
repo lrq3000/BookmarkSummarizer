@@ -42,6 +42,7 @@ import signal
 import logging
 import shutil
 import contextlib
+import multiprocessing
 
 # Platform-specific imports for file locking
 try:
@@ -722,10 +723,16 @@ def load_custom_parsers():
         list: List of callable parser functions, sorted alphabetically by filename.
     """
     parsers = []
-    parsers_dir = os.path.join(os.path.dirname(__file__), 'custom_parsers')
+    if getattr(sys, 'frozen', False):
+        # PyInstaller creates a temporary bundle directory at sys._MEIPASS
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    parsers_dir = os.path.join(base_dir, 'custom_parsers')
 
     if not os.path.exists(parsers_dir):
-        print("custom_parsers/ directory not found, skipping custom parsers")
+        print(f"custom_parsers/ directory not found at {parsers_dir}, skipping custom parsers")
         return parsers
 
     # Iterate through all .py files in custom_parsers/
@@ -1621,7 +1628,32 @@ def init_webdriver():
     chrome_options.add_experimental_option("prefs", prefs)
 
     try:
-        service = Service(ChromeDriverManager().install())
+        # Check if we are in a frozen PyInstaller environment
+        if getattr(sys, 'frozen', False):
+            # In a frozen environment, webdriver-manager might pick up incorrect files (like THIRD_PARTY_NOTICES)
+            # if we just let it install. We need to be more careful.
+
+            # Use a specific cache root or ensure the path is correct
+            # For now, let's let install() run, but inspect the result.
+            driver_path = ChromeDriverManager().install()
+
+            # Check if the path points to a valid executable
+            if not driver_path.endswith('.exe') and sys.platform == 'win32':
+                # If on Windows and not .exe, it might be the THIRD_PARTY_NOTICES issue
+                # Try to find chromedriver.exe in the same directory
+                driver_dir = os.path.dirname(driver_path)
+                exe_path = os.path.join(driver_dir, "chromedriver.exe")
+                if os.path.exists(exe_path):
+                    driver_path = exe_path
+
+            # If still not found or not Windows, we proceed with whatever we got,
+            # or we could add more logic here for Linux/Mac if needed.
+
+            service = Service(driver_path)
+        else:
+            # Standard initialization for development environment
+            service = Service(ChromeDriverManager().install())
+
         driver = webdriver.Chrome(service=service, options=chrome_options)
         return driver
     except Exception as e:
@@ -1702,8 +1734,11 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
         print(f"{progress_info} Selenium crawl failed: {title} - {url} - {str(e)}")
         return None
     finally:
-        if 'driver' in locals():
-            driver.quit()
+        if 'driver' in locals() and driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 # Detect and fix encoding issues - Optimized encoding fix function
 def fix_encoding(text):
@@ -2806,4 +2841,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

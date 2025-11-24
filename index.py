@@ -15,6 +15,8 @@
 
 import json
 import os
+import sys
+import multiprocessing
 import browser_history
 
 # Path to save to JSON file
@@ -46,13 +48,18 @@ def get_bookmarks():
 
     return bookmarks
 
-# Parse bookmarks from all browsers
-bookmarks = get_bookmarks()
+def main():
+    # Parse bookmarks from all browsers
+    bookmarks = get_bookmarks()
 
-# Save to JSON file
-with open(output_path, "w", encoding="utf-8") as output_file:
-    # Remove data with empty URLs, non-URL types, and 'Extensions' folder
-    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["folder"] != "Extensions"]
-    json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
+    # Save to JSON file
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        # Remove data with empty URLs, non-URL types, and 'Extensions' folder
+        bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["folder"] != "Extensions"]
+        json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
 
-print(f"Extracted {len(bookmarks)} bookmarks in total, saved to {output_path}")
+    print(f"Extracted {len(bookmarks)} bookmarks in total, saved to {output_path}")
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()

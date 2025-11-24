@@ -12,6 +12,7 @@ This script:
 import subprocess
 import sys
 import os
+import shutil
 
 def install_pyinstaller():
     """Install PyInstaller if not present."""
@@ -95,7 +96,14 @@ def build_executable():
             print(f"Build for {name} failed with error: {e}")
             sys.exit(1)
 
-    print("All builds completed successfully. Executables are in the 'dist' directory.")
+    # Copy default_config.toml to dist folder
+    if os.path.exists("default_config.toml"):
+        print("Copying default_config.toml to dist/ directory...")
+        shutil.copy2("default_config.toml", "dist/default_config.toml")
+    else:
+        print("Warning: default_config.toml not found, skipping copy.")
+
+    print("All builds completed successfully. Executables and config are in the 'dist' directory.")
 
 if __name__ == "__main__":
     print("Starting build process for BookmarkSummarizer...")

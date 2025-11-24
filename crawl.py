@@ -42,6 +42,7 @@ import signal
 import logging
 import shutil
 import contextlib
+import multiprocessing
 
 # Platform-specific imports for file locking
 try:
@@ -2840,4 +2841,5 @@ def main():
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

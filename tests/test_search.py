@@ -11,15 +11,15 @@ import json
 # Add parent directory to path to import fuzzy_bookmark_search functions
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fuzzy_bookmark_search import load_bookmarks_data, init_lmdb, cleanup_lmdb, search_bookmarks
+from fuzzy_bookmark_search import load_bookmarks_data, lmdb_open, cleanup_lmdb, search_bookmarks
 
 def test_lmdb_loading():
     """Test loading bookmarks from LMDB database."""
     print("=== Testing LMDB Bookmark Loading ===")
 
     # Initialize LMDB
-    print("Initializing LMDB database...")
-    init_lmdb()
+    print("Opening LMDB database...")
+    lmdb_open()
 
     # Load bookmarks from LMDB
     print("Loading bookmarks from LMDB...")

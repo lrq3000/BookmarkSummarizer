@@ -11,14 +11,15 @@ import os
 # Add current directory to path to import crawl.py functions
 sys.path.insert(0, os.path.dirname(__file__))
 
-from crawl import parallel_fetch_bookmarks, init_lmdb, cleanup_lmdb, ModelConfig, generate_summaries_for_bookmarks, test_api_connection
+from crawl import parallel_fetch_bookmarks, cleanup_lmdb, ModelConfig, generate_summaries_for_bookmarks, test_api_connection
+from fuzzy_bookmark_search import lmdb_open
 
 def main():
     print("=== LMDB Migration Test: Crawling Phase ===")
 
     # Initialize LMDB
-    print("Initializing LMDB database...")
-    init_lmdb()
+    print("Opening LMDB database...")
+    lmdb_open()
 
     # Load test bookmarks
     print("Loading test bookmarks...")

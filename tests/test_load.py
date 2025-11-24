@@ -5,13 +5,13 @@ Test script to reproduce the LMDB loading error.
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fuzzy_bookmark_search import init_lmdb, load_bookmarks_from_lmdb, cleanup_lmdb
+from fuzzy_bookmark_search import lmdb_open, load_bookmarks_from_lmdb, cleanup_lmdb
 
 def test_load():
-    print("Initializing LMDB...")
-    init_lmdb(readonly=True)
+    print("Opening LMDB...")
+    lmdb_open()
     print("Loading bookmarks...")
     try:
         bookmarks = load_bookmarks_from_lmdb()

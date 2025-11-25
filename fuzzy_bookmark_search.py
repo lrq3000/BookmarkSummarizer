@@ -59,20 +59,27 @@ class FuzzyBookmarkSearch:
         Parameters:
             no_update (bool): Allow proceeding without LMDB if database doesn't exist. Defaults to False.
         """
+        print(f"Checking LMDB path: {self.lmdb_path}")
         if not os.path.exists(self.lmdb_path):
+            print(f"LMDB path {self.lmdb_path} does not exist.")
             if no_update:
                 self.use_fallback = True
+                print("Using fallback mode due to missing LMDB.")
                 return
             else:
                 print("LMDB database not found. Run crawl.py first or use --no-update to proceed without LMDB.")
                 sys.exit(1)
 
         try:
-            self.lmdb_env = lmdb.open(self.lmdb_path, readonly=True)
+            print(f"Attempting to open LMDB environment at {self.lmdb_path}")
+            self.lmdb_env = lmdb.open(self.lmdb_path, readonly=True, max_dbs=7)
+            print(f"Successfully opened LMDB environment.")
 
+            print("Opening database handles...")
             self.bookmarks_db = self.lmdb_env.open_db(b'bookmarks')
             self.domain_index_db = self.lmdb_env.open_db(b'domain_index')
             self.date_index_db = self.lmdb_env.open_db(b'date_index')
+            print(f"Database handles opened: bookmarks_db={self.bookmarks_db is not None}, domain_index_db={self.domain_index_db is not None}, date_index_db={self.date_index_db is not None}")
 
             print(f"Opened LMDB database at {self.lmdb_path} (readonly=True)")
 
@@ -103,6 +110,7 @@ class FuzzyBookmarkSearch:
             Any: Result of the operation or fallback
         """
         if self.use_fallback:
+            print(f"Using fallback for {operation_name} because use_fallback is True")
             if fallback_func:
                 try:
                     return fallback_func()
@@ -166,14 +174,17 @@ class FuzzyBookmarkSearch:
         Yields:
             dict: Preprocessed bookmark dictionary with fields like title, url, content, summary, key.
         """
+        print("Starting load_bookmarks_data")
         # Try to load from LMDB first
         bookmarks_list = self.load_bookmarks_from_lmdb()
 
         if bookmarks_list is None:
+            print("bookmarks_list is None, setting to []")
             bookmarks_list = []
 
         # Perform preliminary pass to count total records for progress tracking
         total_records = len(bookmarks_list)
+        print(f"Total records loaded: {total_records}")
 
         if total_records == 0:
             print("Warning: No bookmarks found in LMDB database. Make sure to run crawl.py first to populate the database.")
@@ -207,10 +218,13 @@ class FuzzyBookmarkSearch:
         """
         Helper function to load bookmarks from LMDB within a transaction.
         """
+        print("Starting load_bookmarks_from_lmdb")
         bookmarks = []
         def load_operation(txn):
+            print(f"Creating cursor for bookmarks_db: {self.bookmarks_db}")
             cursor = txn.cursor(db=self.bookmarks_db)
             count = 0
+            print("Iterating through cursor...")
             for key, value in cursor:
                 count += 1
                 try:
@@ -220,9 +234,12 @@ class FuzzyBookmarkSearch:
                     print(f"Error loading bookmark at position {count}, key: {key[:50] if key else 'None'}..., error: {e}")
                     # Skip corrupted entries
                     continue
+            print(f"Finished iterating, total count: {count}, bookmarks loaded: {len(bookmarks)}")
             return bookmarks
 
-        return self.safe_lmdb_operation(load_operation, lambda: self.fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)
+        result = self.safe_lmdb_operation(load_operation, lambda: self.fallback_bookmarks.copy(), "loading bookmarks from LMDB", readonly=True)
+        print(f"load_bookmarks_from_lmdb returning {len(result)} bookmarks")
+        return result
 
     def query_bookmarks_by_domain(self, domain, limit=50):
         """

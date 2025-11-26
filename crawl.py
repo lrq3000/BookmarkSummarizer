@@ -1664,6 +1664,8 @@ def init_webdriver():
 # Fetch dynamic content using Selenium
 def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title", min_delay=None, max_delay=None):
     """Fetches webpage content using Selenium"""
+    # Get worker thread ID for logging
+    worker_id = threading.get_ident()
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
     
     options = Options()
@@ -1677,19 +1679,19 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
     try:
         driver = init_webdriver()
         if driver is None:
-            print(f"{progress_info} Selenium not available, skipping crawl for: {title} - {url}")
+            print(f"[{worker_id}] {progress_info} Selenium not available, skipping crawl for: {title} - {url}")
             return None
 
-        print(f"{progress_info} Starting Selenium crawl for: {title} - {url}")
+        print(f"[{worker_id}] {progress_info} Starting Selenium crawl for: {title} - {url}")
         driver.get(url)
 
         # Wait for page to load with semi-random delay (minimum 5 seconds)
         if min_delay is not None and max_delay is not None:
             selenium_min = max(5, min_delay)
             delay = random.uniform(selenium_min, max(selenium_min, max_delay))
-            print(f"Waiting {delay:.2f} seconds before fetching {url}")
+            print(f"[{worker_id}] Waiting {delay:.2f} seconds before fetching {url}")
             time.sleep(delay)
-            print(f"Starting to fetch {url}")
+            print(f"[{worker_id}] Starting to fetch {url}")
         else:
             time.sleep(5)
         
@@ -1704,13 +1706,13 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
                         # Use a more robust locator strategy if possible, but stick to the original logic for now
                         close_button = driver.find_element("css selector", selector)
                         close_button.click()
-                        print(f"{progress_info} Successfully closed Zhihu login pop-up - using selector: {selector}")
+                        print(f"[{worker_id}] {progress_info} Successfully closed Zhihu login pop-up - using selector: {selector}")
                         time.sleep(1)
                         break
                     except:
                         continue
             except Exception as e:
-                print(f"{progress_info} Failed to handle Zhihu login pop-up: {title} - {str(e)}")
+                print(f"[{worker_id}] {progress_info} Failed to handle Zhihu login pop-up: {title} - {str(e)}")
         
         # Get page content
         content = driver.page_source
@@ -1732,14 +1734,14 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
         
         # Ensure text is not empty
         if not text_content or len(text_content.strip()) < 5:  # At least 5 characters for valid content
-            print(f"{progress_info} Selenium crawl content is empty or too short: {title} - {url}")
+            print(f"[{worker_id}] {progress_info} Selenium crawl content is empty or too short: {title} - {url}")
             return None
             
-        print(f"{progress_info} Selenium successfully crawled: {title} - {url}, content length: {len(text_content)} characters")
+        print(f"[{worker_id}] {progress_info} Selenium successfully crawled: {title} - {url}, content length: {len(text_content)} characters")
         return text_content
         
     except Exception as e:
-        print(f"{progress_info} Selenium crawl failed: {title} - {url} - {str(e)}")
+        print(f"[{worker_id}] {progress_info} Selenium crawl failed: {title} - {url} - {str(e)}")
         return None
     finally:
         if 'driver' in locals() and driver is not None:
@@ -1822,10 +1824,13 @@ def apply_custom_parsers(bookmark, parsers):
 # Crawl webpage content
 def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None):
     """Crawls webpage content"""
+    # Get worker thread ID for logging
+    worker_id = threading.get_ident()
+
     # Check for shutdown signal at the beginning of processing
     global shutdown_flag
     if shutdown_flag:
-        print(f"Shutdown signal received, skipping bookmark processing: {bookmark.get('name', 'No Title')}")
+        print(f"[{worker_id}] Shutdown signal received, skipping bookmark processing: {bookmark.get('name', 'No Title')}")
         return None, None
 
     # Apply custom parsers before fetching content
@@ -1842,22 +1847,22 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
     
     # Use Selenium directly for Zhihu links
     if "zhihu.com" in url:
-        print(f"{progress_info} Detected Zhihu link, using Selenium directly for crawl: {bookmark_title} - {url}")
+        print(f"[{worker_id}] {progress_info} Detected Zhihu link, using Selenium directly for crawl: {bookmark_title} - {url}")
         content = fetch_with_selenium(url, current_idx, total_count, bookmark_title, min_delay, max_delay)
         crawl_method = "selenium"
 
         # Record crawl result
         if content:
-            print(f"{progress_info} Successfully crawled Zhihu content: {bookmark_title} - {url}, content length: {len(content)} characters")
+            print(f"[{worker_id}] {progress_info} Successfully crawled Zhihu content: {bookmark_title} - {url}, content length: {len(content)} characters")
         else:
-            print(f"{progress_info} Failed to crawl Zhihu content: {bookmark_title} - {url}")
+            print(f"[{worker_id}] {progress_info} Failed to crawl Zhihu content: {bookmark_title} - {url}")
             return None, {"url": url, "title": bookmark_title, "reason": "Zhihu content crawl failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
     else:
         try:
             try:
-                print(f"{progress_info} Starting crawl: {bookmark_title} - {url}")
+                print(f"[{worker_id}] {progress_info} Starting crawl: {bookmark_title} - {url}")
             except UnicodeEncodeError:
-                print(f"{progress_info} Starting crawl: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                print(f"[{worker_id}] {progress_info} Starting crawl: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
             session = create_session()
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -1867,9 +1872,9 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
             # Add semi-random delay before HTTP request to prevent detection
             if min_delay is not None and max_delay is not None:
                 delay = random.uniform(min_delay, max_delay)
-                print(f"Waiting {delay:.2f} seconds before fetching {url}")
+                print(f"[{worker_id}] Waiting {delay:.2f} seconds before fetching {url}")
                 time.sleep(delay)
-                print(f"Starting to fetch {url}")
+                print(f"[{worker_id}] Starting to fetch {url}")
             response = session.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             
@@ -1882,7 +1887,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' not in content_type.lower() and 'text/plain' not in content_type.lower():
                 error_msg = f"Non-text content (Content-Type: {content_type})"
-                print(f"{progress_info} Skipping {error_msg}: {bookmark_title} - {url}")
+                print(f"[{worker_id}] {progress_info} Skipping {error_msg}: {bookmark_title} - {url}")
                 failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
                 return None, failed_info
                 
@@ -1909,23 +1914,23 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
         except Exception as e:
             error_msg = f"Request failed: {str(e)}"
             try:
-                print(f"{progress_info} {error_msg}: {bookmark_title} - {url}")
+                print(f"[{worker_id}] {progress_info} {error_msg}: {bookmark_title} - {url}")
             except UnicodeEncodeError:
-                print(f"{progress_info} {error_msg}: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
+                print(f"[{worker_id}] {progress_info} {error_msg}: {bookmark_title.encode('ascii', 'replace').decode('ascii')} - {url}")
             failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             return None, failed_info
     
     # If content is empty after regular crawl or for special sites, try Selenium
     if content is None or (isinstance(content, str) and not content.strip()):
-        print(f"{progress_info} Regular crawl content is empty, attempting Selenium: {bookmark_title} - {url}")
+        print(f"[{worker_id}] {progress_info} Regular crawl content is empty, attempting Selenium: {bookmark_title} - {url}")
         content = fetch_with_selenium(url, current_idx, total_count, bookmark_title, min_delay, max_delay)
         crawl_method = "selenium"
         
         # Record Selenium crawl result
         if content:
-            print(f"{progress_info} Selenium successfully crawled {url}, content length: {len(content)} characters")
+            print(f"[{worker_id}] {progress_info} Selenium successfully crawled {url}, content length: {len(content)} characters")
         else:
-            print(f"{progress_info} Selenium crawl failed or content is empty: {url}")
+            print(f"[{worker_id}] {progress_info} Selenium crawl failed or content is empty: {url}")
     
     # Fix possible encoding issues
     if html_title:
@@ -1947,22 +1952,22 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
         # If we have a valid HTML title, use it as content and log a warning
         if html_title and html_title != "No Title":
             content = html_title
-            print(f"{progress_info} Warning: Using HTML title as content (no webpage content available): {bookmark_title} - {url}")
+            print(f"[{worker_id}] {progress_info} Warning: Using HTML title as content (no webpage content available): {bookmark_title} - {url}")
         else:
             error_msg = "Extracted content is empty and no HTML title available"
-            print(f"{progress_info} {error_msg}: {bookmark_title} - {url}")
+            print(f"[{worker_id}] {progress_info} {error_msg}: {bookmark_title} - {url}")
             failed_info = {"url": url, "title": bookmark_title, "reason": error_msg, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             return None, failed_info
             
     # Check for content deduplication using LMDB (transactional)
     content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-    print(f"{progress_info} DEBUG: Generated content hash: {content_hash[:16]}... for URL: {url}")
+    print(f"[{worker_id}] {progress_info} DEBUG: Generated content hash: {content_hash[:16]}... for URL: {url}")
     with content_lock:
         def check_content_deduplication(txn):
             if txn.get(content_hash.encode('utf-8'), db=content_hashes_db):
-                print(f"{progress_info} Skipping duplicate content: {bookmark_title} - {url} (hash: {content_hash[:16]}...)")
+                print(f"[{worker_id}] {progress_info} Skipping duplicate content: {bookmark_title} - {url} (hash: {content_hash[:16]}...)")
                 return True  # Duplicate found
-            print(f"{progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
+            print(f"[{worker_id}] {progress_info} DEBUG: Content hash not found in database, adding: {content_hash[:16]}...")
             txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
             return False  # No duplicate
 
@@ -1976,7 +1981,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
             if use_fallback:
                 # Use fallback in-memory check
                 if content_hash in fallback_content_hashes:
-                    print(f"{progress_info} Skipping duplicate content (fallback): {bookmark_title} - {url}")
+                    print(f"[{worker_id}] {progress_info} Skipping duplicate content (fallback): {bookmark_title} - {url}")
                     return None, None
                 fallback_content_hashes.add(content_hash)
             else:
@@ -1991,11 +1996,11 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
     bookmark_with_content["crawl_method"] = crawl_method
 
     try:
-        print(f"{progress_info} Successfully crawled: {bookmark_title} - {url}, content length: {len(content)} characters")
+        print(f"[{worker_id}] {progress_info} Successfully crawled: {bookmark_title} - {url}, content length: {len(content)} characters")
     except UnicodeEncodeError:
         # Handle Unicode encoding issues on Windows console
         safe_title = bookmark_title.encode('utf-8', 'replace').decode('utf-8')
-        print(f"{progress_info} Successfully crawled: {safe_title} - {url}, content length: {len(content)} characters")
+        print(f"[{worker_id}] {progress_info} Successfully crawled: {safe_title} - {url}, content length: {len(content)} characters")
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content

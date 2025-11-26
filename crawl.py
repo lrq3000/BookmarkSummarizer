@@ -155,6 +155,9 @@ content_lock = threading.Lock()
 # Global flag for graceful shutdown
 shutdown_flag = False
 
+# Global variable to store the WebDriver path
+webdriver_path = None
+
 
 # Custom parsers list - dynamically loaded from custom_parsers/ directory
 custom_parsers = []
@@ -1612,49 +1615,44 @@ def update_secondary_indexes(txn, bookmark_key, bookmark):
         logger.warning(f"Failed to update secondary indexes for bookmark {bookmark_key}: {e}")
         # Don't fail the entire operation for index update issues
 
-# Initialize Selenium WebDriver
-def init_webdriver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Headless mode
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-
-    # Add more user agent information
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
-
-    # Disable image loading to improve speed
-    prefs = {"profile.managed_default_content_settings.images": 2}
-    chrome_options.add_experimental_option("prefs", prefs)
-
+def prepare_webdriver():
+    """Install and cache the WebDriver, and store the path in a global variable."""
+    global webdriver_path
     try:
-        # Check if we are in a frozen PyInstaller environment
         if getattr(sys, 'frozen', False):
-            # In a frozen environment, webdriver-manager might pick up incorrect files (like THIRD_PARTY_NOTICES)
-            # if we just let it install. We need to be more careful.
-
-            # Use a specific cache root or ensure the path is correct
-            # For now, let's let install() run, but inspect the result.
+            # Handle frozen environment pathing.
             driver_path = ChromeDriverManager().install()
-
-            # Check if the path points to a valid executable
             if not driver_path.endswith('.exe') and sys.platform == 'win32':
-                # If on Windows and not .exe, it might be the THIRD_PARTY_NOTICES issue
-                # Try to find chromedriver.exe in the same directory
                 driver_dir = os.path.dirname(driver_path)
                 exe_path = os.path.join(driver_dir, "chromedriver.exe")
                 if os.path.exists(exe_path):
                     driver_path = exe_path
-
-            # If still not found or not Windows, we proceed with whatever we got,
-            # or we could add more logic here for Linux/Mac if needed.
-
-            service = Service(driver_path)
+            webdriver_path = driver_path
         else:
-            # Standard initialization for development environment
-            service = Service(ChromeDriverManager().install())
+            # Standard installation.
+            webdriver_path = ChromeDriverManager().install()
+        print(f"WebDriver installed at: {webdriver_path}")
+    except Exception as e:
+        logger.warning(f"WebDriver installation failed: {e}. Selenium will not be available.")
 
+# Initialize Selenium WebDriver
+def init_webdriver():
+    """Initializes a new WebDriver instance using the pre-installed driver path."""
+    if not webdriver_path:
+        return None  # Return None if the driver was not prepared.
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
+
+    try:
+        service = Service(webdriver_path)
         driver = webdriver.Chrome(service=service, options=chrome_options)
         return driver
     except Exception as e:
@@ -2556,6 +2554,9 @@ def main():
 
     # Register signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
+
+    # Prepare the WebDriver in the main thread before starting parallel operations
+    prepare_webdriver()
 
     # Parse command-line arguments
     args = parse_args()

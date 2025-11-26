@@ -19,6 +19,7 @@ import json
 import os
 import re
 import time
+import random
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
@@ -1661,7 +1662,7 @@ def init_webdriver():
         return None
 
 # Fetch dynamic content using Selenium
-def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title"):
+def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title", min_delay=None, max_delay=None):
     """Fetches webpage content using Selenium"""
     progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
     
@@ -1681,9 +1682,14 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
 
         print(f"{progress_info} Starting Selenium crawl for: {title} - {url}")
         driver.get(url)
-        
-        # Wait for page to load
-        time.sleep(5)
+
+        # Wait for page to load with semi-random delay (minimum 5 seconds)
+        if min_delay is not None and max_delay is not None:
+            selenium_min = max(5, min_delay)
+            delay = random.uniform(selenium_min, max(selenium_min, max_delay))
+            time.sleep(delay)
+        else:
+            time.sleep(5)
         
         # Special handling for Zhihu: attempt to close login pop-up if present
         if "zhihu.com" in url:
@@ -1812,7 +1818,7 @@ def apply_custom_parsers(bookmark, parsers):
     return updated_bookmark
 
 # Crawl webpage content
-def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
+def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None):
     """Crawls webpage content"""
     # Check for shutdown signal at the beginning of processing
     global shutdown_flag
@@ -1835,7 +1841,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     # Use Selenium directly for Zhihu links
     if "zhihu.com" in url:
         print(f"{progress_info} Detected Zhihu link, using Selenium directly for crawl: {bookmark_title} - {url}")
-        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title)
+        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title, min_delay, max_delay)
         crawl_method = "selenium"
 
         # Record crawl result
@@ -1856,6 +1862,10 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7" # Changed to prioritize English
             }
+            # Add semi-random delay before HTTP request to prevent detection
+            if min_delay is not None and max_delay is not None:
+                delay = random.uniform(min_delay, max_delay)
+                time.sleep(delay)
             response = session.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             
@@ -1904,7 +1914,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     # If content is empty after regular crawl or for special sites, try Selenium
     if content is None or (isinstance(content, str) and not content.strip()):
         print(f"{progress_info} Regular crawl content is empty, attempting Selenium: {bookmark_title} - {url}")
-        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title)
+        content = fetch_with_selenium(url, current_idx, total_count, bookmark_title, min_delay, max_delay)
         crawl_method = "selenium"
         
         # Record Selenium crawl result
@@ -1985,7 +1995,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None):
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False, min_delay=None, max_delay=None):
     # Determine processing mode based on limit
     if limit:
         print(f"Processing up to {limit} new bookmarks sequentially to accurately enforce limit")
@@ -2101,7 +2111,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 safe_title = title.encode('utf-8', 'replace').decode('utf-8')
                 print(f"Processing bookmark [{idx+1}]: {safe_title} - {url}")
 
-            result, failed_info = fetch_webpage_content(bookmark, idx+1, None)  # No total_count for sequential
+            result, failed_info = fetch_webpage_content(bookmark, idx+1, None, min_delay, max_delay)  # No total_count for sequential
             if result:
                 bookmarks_with_content.append(result)
                 new_bookmarks_added += 1
@@ -2321,7 +2331,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                 # Print progress before submitting the task
                 title = bookmark.get("name", "No Title")
                 print(f"Submitting task [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
-                future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count)
+                future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count, min_delay, max_delay)
                 futures.append(future)
 
             # Use tqdm to create a progress bar
@@ -2501,6 +2511,20 @@ def parse_args():
         help='Stop execution if backup fails instead of continuing (default: continue on failure)'
     )
 
+    # Add delay control arguments
+    parser.add_argument(
+        '--min-delay',
+        type=float,
+        default=1.0,
+        help='Minimum delay in seconds between requests (default: 1.0)'
+    )
+    parser.add_argument(
+        '--max-delay',
+        type=float,
+        default=5.0,
+        help='Maximum delay in seconds between requests (default: 5.0)'
+    )
+
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -2526,6 +2550,8 @@ def main():
     max_workers = args.workers if args.workers is not None else 20  # Default: 20 worker threads
     generate_summary_flag = not args.no_summary  # Command-line flag overrides config
     flush_interval = args.flush_interval  # Interval for flushing to disk
+    min_delay = args.min_delay  # Minimum delay between requests
+    max_delay = args.max_delay  # Maximum delay between requests
 
     # Initialize LMDB for persistent storage with configurable settings
     # Command-line arguments take precedence over environment variables
@@ -2730,7 +2756,9 @@ def main():
         max_workers=max_workers,
         limit=bookmark_limit if bookmark_limit > 0 else None,
         flush_interval=flush_interval,
-        skip_unreachable=args.skip_unreachable
+        skip_unreachable=args.skip_unreachable,
+        min_delay=min_delay,
+        max_delay=max_delay
     )
     
     # Only execute the following code if summary generation is enabled

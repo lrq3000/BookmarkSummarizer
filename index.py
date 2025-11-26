@@ -17,7 +17,8 @@ import json
 import os
 import sys
 import multiprocessing
-from browser_history.browsers import Firefox, Chrome, Edge, Safari, Opera, Brave, Vivaldi, Epic
+import inspect
+import browser_history.browsers as browsers_module
 
 # Path to save to JSON file
 output_path = os.path.expanduser("./bookmarks.json")
@@ -32,8 +33,14 @@ def get_bookmarks():
     #bookmarks_data = outputs.bookmarks
 
     # Fetch bookmarks from all browsers manually (bypasses sorting in browser-history and hence the Firefox bug)
-    # List of browser classes to fetch from
-    browser_classes = [Firefox, Chrome, Edge, Safari, Opera, Brave, Vivaldi, Epic]
+    # Dynamically retrieve list of all supported browser classes from browser_history module
+    browser_classes = [
+        getattr(browsers_module, name)
+        for name in dir(browsers_module)
+        if inspect.isclass(getattr(browsers_module, name)) and
+           issubclass(getattr(browsers_module, name), browsers_module.Browser) and
+           getattr(browsers_module, name) not in (browsers_module.Browser, browsers_module.ChromiumBasedBrowser)
+    ]
     bookmarks_data = []
     for browser_class in browser_classes:
         try:

@@ -33,15 +33,21 @@ BookmarkSummarizer is a powerful tool that crawls your browsers' bookmarks, gene
 
 ### Installation
 
+#### Portable binaries
+
+Head to the [GitHub Releases](https://github.com/lrq3000/BookmarkSummarizer/releases) and pick the latest release, you will find precompiled binaries for Windows, MacOS and Linux.
+
+#### From source
+
 1. Clone the repository:
 ```bash
-git clone https://github.com/wyj/BookmarkSummarizer.git
+git clone https://github.com/lrq3000/BookmarkSummarizer.git
 cd BookmarkSummarizer
 ```
 
 2. Install dependencies:
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 3. Make a TOML configuration file to finetune behavior (create a `.toml` file):
@@ -55,23 +61,6 @@ temperature=0.3
 ```
 
 ### Usage
-
-#### Installation
-
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Make a TOML configuration file** (optional if you use ollama and the default model):
-   ```
-   model_type=ollama  # options: openai, deepseek, qwen, ollama
-   api_key=your_api_key_here
-   api_base=http://localhost:11434  # ollama local endpoint or other model api address
-   model_name=gemma3:1b  # or other supported model
-   max_tokens=1000
-   temperature=0.3
-   ```
 
 #### Fetch Bookmarks from Browsers
 

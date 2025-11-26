@@ -198,7 +198,7 @@ class FuzzyBookmarkSearch:
             # Treat 'N/A' as missing value for key generation
             key = (guid if guid != 'N/A' else '') or (id_val if id_val != 'N/A' else '') or url
             title = (bookmark.get('title') or bookmark.get('name', '')).strip()
-            content = (bookmark.get('content', '')).strip()
+            content = bookmark.get('content', '') + '\n\n' + bookmark.get('description', '')
             summary = (bookmark.get('summary', '')).strip()
 
             # Limit content length to prevent index bloat

@@ -2262,12 +2262,10 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
                 print(f"Flushed {bookmarks_processed} bookmarks and {failed_processed} failed records to LMDB in batches")
 
-                # Clear the current lists after successful flush
-                current_bookmarks.clear()
-                current_failed.clear()
             except Exception as e:
                 print(f"Error during periodic flush: {e}")
-                # Don't clear lists on general errors to allow retry
+                # Re-raise the exception to be handled by the monitor thread
+                raise
             finally:
                 with flush_flag_lock:
                     flush_in_progress = False
@@ -2276,18 +2274,39 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             while True:
                 time.sleep(1)  # Check every second
                 current_time = time.time()
+
+                # Check if flush interval has been reached
+                if current_time - last_flush_time_ref[0] < flush_interval:
+                    continue
+
+                bookmarks_to_flush = []
+                failed_to_flush = []
+
+                # Lock, copy, and clear. This should be very fast.
                 with bookmarks_lock:
-                    if current_time - last_flush_time_ref[0] >= flush_interval:
-                        # Trigger flush when interval has passed
-                        print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
-                        try:
-                            flush_to_disk(bookmarks_with_content, failed_records)
-                            print("Intermediate flush complete.")
-                            last_flush_time_ref[0] = current_time
-                        except Exception as e:
-                            print(f"Intermediate flush failed: {e}")
-                            # Continue monitoring even if flush fails
-                            # Don't update last_flush_time_ref to retry on next interval
+                    if not bookmarks_with_content and not failed_records:
+                        continue
+
+                    bookmarks_to_flush = list(bookmarks_with_content)
+                    failed_to_flush = list(failed_records)
+                    bookmarks_with_content.clear()
+                    failed_records.clear()
+
+                if not bookmarks_to_flush and not failed_to_flush:
+                    continue
+
+                print(f"Flush interval ({flush_interval}s) reached, flushing to disk...")
+                try:
+                    # Flush is called outside the lock
+                    flush_to_disk(bookmarks_to_flush, failed_to_flush)
+                    print("Intermediate flush complete.")
+                    last_flush_time_ref[0] = time.time()
+                except Exception as e:
+                    print(f"Intermediate flush failed: {e}. Re-queueing records.")
+                    # If flush fails, re-acquire lock and add records back.
+                    with bookmarks_lock:
+                        bookmarks_with_content.extend(bookmarks_to_flush)
+                        failed_records.extend(failed_to_flush)
 
         # Start daemon thread to monitor counter and trigger flushes
         # Treats persistence as a "sidecar" process, similar to event-sourcing in databases.

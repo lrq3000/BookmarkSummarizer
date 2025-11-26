@@ -8,22 +8,22 @@ import json
 import sys
 import os
 
-# Add current directory to path to import crawl.py functions
-sys.path.insert(0, os.path.dirname(__file__))
+# Add project root to path to import crawl.py functions
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from crawl import parallel_fetch_bookmarks, cleanup_lmdb, ModelConfig, generate_summaries_for_bookmarks, test_api_connection
-from fuzzy_bookmark_search import lmdb_open
+from crawl import parallel_fetch_bookmarks, cleanup_lmdb, ModelConfig, generate_summaries_for_bookmarks, test_api_connection, init_lmdb
 
 def main():
     print("=== LMDB Migration Test: Crawling Phase ===")
 
     # Initialize LMDB
-    print("Opening LMDB database...")
-    lmdb_open()
+    print("Initializing LMDB database...")
+    init_lmdb()
 
     # Load test bookmarks
     print("Loading test bookmarks...")
-    with open('test_bookmarks.json', 'r', encoding='utf-8') as f:
+    test_bookmarks_path = os.path.join(os.path.dirname(__file__), 'test_bookmarks.json')
+    with open(test_bookmarks_path, 'r', encoding='utf-8') as f:
         test_bookmarks = json.load(f)
 
     print(f"Loaded {len(test_bookmarks)} test bookmarks")

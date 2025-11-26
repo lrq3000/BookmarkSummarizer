@@ -1687,7 +1687,9 @@ def fetch_with_selenium(url, current_idx=None, total_count=None, title="No Title
         if min_delay is not None and max_delay is not None:
             selenium_min = max(5, min_delay)
             delay = random.uniform(selenium_min, max(selenium_min, max_delay))
+            print(f"Waiting {delay:.2f} seconds before fetching {url}")
             time.sleep(delay)
+            print(f"Starting to fetch {url}")
         else:
             time.sleep(5)
         
@@ -1865,7 +1867,9 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
             # Add semi-random delay before HTTP request to prevent detection
             if min_delay is not None and max_delay is not None:
                 delay = random.uniform(min_delay, max_delay)
+                print(f"Waiting {delay:.2f} seconds before fetching {url}")
                 time.sleep(delay)
+                print(f"Starting to fetch {url}")
             response = session.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             

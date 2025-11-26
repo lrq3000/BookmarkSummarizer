@@ -2028,16 +2028,29 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             if current_bookmarks:
                 with lmdb_env.begin(write=True) as txn:
                     cursor_b = txn.cursor(bookmarks_db)
+                    # Determine the next available key for new entries
                     next_key_b = int.from_bytes(cursor_b.key(), 'big') + 1 if cursor_b.last() else 1
                     for bookmark in current_bookmarks:
                         url = bookmark.get('url')
                         if not url: continue
 
-                        bookmark_key = next_key_b.to_bytes(4, 'big')
+                        # Check if the bookmark URL already exists to decide whether to update or insert
+                        key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
+
+                        if key_bytes:
+                            # Update existing bookmark
+                            bookmark_key = key_bytes
+                        else:
+                            # Insert new bookmark
+                            bookmark_key = next_key_b.to_bytes(4, 'big')
+                            next_key_b += 1
+
+                        # Write to the database
                         txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
+                        # Ensure the URL-to-key mapping is up-to-date
                         txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                        # Update secondary indexes
                         update_secondary_indexes(txn, bookmark_key, bookmark)
-                        next_key_b += 1
 
             # Batch process failed records to LMDB
             if current_failed:

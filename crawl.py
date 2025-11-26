@@ -2319,72 +2319,66 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         monitor = threading.Thread(target=monitor_thread, args=(bookmarks_with_content, failed_records, last_flush_time_ref), daemon=True)
         monitor.start()
 
+        def _crawl_bookmark(args):
+            """Wrapper function to perform URL deduplication and crawl in a single thread task."""
+            bookmark, idx, total_count, min_delay, max_delay = args
+
+            # Check for shutdown signal before processing
+            if shutdown_flag:
+                return None, None
+
+            url = bookmark['url']
+            url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+
+            # This is the critical change: the database check is now inside the worker.
+            # LMDB's default locking should handle concurrent write attempts gracefully.
+            try:
+                with lmdb_env.begin(write=True) as txn:
+                    if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                        title = bookmark.get("name", "No Title")
+                        worker_id = threading.get_ident()
+                        print(f"[{worker_id}] Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
+                        return "skipped", None
+                    txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
+            except Exception as e:
+                logger.error(f"Error during URL deduplication check in worker: {e}")
+                # Decide on a fallback or failure behavior
+                return None, {"url": url, "title": bookmark.get("name", "No Title"), "reason": "Deduplication check failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+
+            # If not a duplicate, proceed with fetching
+            return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay)
+
         # Use ThreadPoolExecutor for parallel crawling of bookmark content
         start_time = time.time()
         total_count = len(bookmarks_to_process)
         print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
         print(f"Start time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-        # Create a list to store all tasks
-        futures = []
+        tasks = [(bookmarks_to_process[i], i + 1, total_count, min_delay, max_delay) for i in range(total_count)]
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            for idx, bookmark in enumerate(bookmarks_to_process):
-                # Check for shutdown signal before submitting new tasks
-                if shutdown_flag:
-                    print("Shutdown signal received, stopping task submission...")
-                    break
+            # map() is a good way to apply the function to all items and handle results in order.
+            # It also simplifies the logic of submitting and collecting results.
+            results = list(tqdm(executor.map(_crawl_bookmark, tasks), total=total_count, desc="Crawl Progress"))
 
-                url = bookmark['url']
-                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-                try:
-                    with lmdb_env.begin(write=True) as txn:
-                        if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
-                            title = bookmark.get("name", "No Title")
-                            print(f"Skipping duplicate URL [{idx+1}/{total_count}]: {title} - {url}")
-                            skipped_url_count += 1
-                            continue
-                        txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
-                except Exception as e:
-                    logger.error(f"Error during URL deduplication check: {e}")
-                    if use_fallback:
-                        # Use fallback in-memory check
-                        if url_hash in fallback_url_hashes:
-                            skipped_url_count += 1
-                            continue
-                        fallback_url_hashes.add(url_hash)
-                    else:
-                        continue
-
-                # Print progress before submitting the task
-                title = bookmark.get("name", "No Title")
-                print(f"Submitting task [{idx+1}/{total_count}]: {title} - {bookmark['url']}")
-                future = executor.submit(fetch_webpage_content, bookmark, idx+1, total_count, min_delay, max_delay)
-                futures.append(future)
-
-            # Use tqdm to create a progress bar
-            for future in tqdm(futures, total=len(futures), desc="Crawl Progress"):
-                # Check for shutdown signal during processing
-                if shutdown_flag:
-                    print("Shutdown signal received, cancelling remaining futures...")
-                    # Cancel remaining futures
-                    for f in futures:
-                        if not f.done():
-                            f.cancel()
-                    break
-
-                result, failed_info = future.result()
-                with bookmarks_lock:
-                    if result:
-                        bookmarks_with_content.append(result)
-                    if failed_info:
-                        if not skip_unreachable:
-                            # Save unreachable bookmark with error field
-                            error_bookmark = bookmark.copy()
-                            error_bookmark["error"] = failed_info["reason"]
-                            error_bookmark["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                            bookmarks_with_content.append(error_bookmark)
-                        failed_records.append(failed_info)
+        # Process results after all threads are complete
+        for result, failed_info in results:
+            if result == "skipped":
+                skipped_url_count += 1
+                continue
+            with bookmarks_lock:
+                if result:
+                    bookmarks_with_content.append(result)
+                if failed_info:
+                    # Logic for handling failed bookmarks
+                    if not skip_unreachable:
+                        # Find the original bookmark from the input list to get all its data
+                        original_bookmark = next((b for b in bookmarks if b['url'] == failed_info['url']), {})
+                        error_bookmark = original_bookmark.copy()
+                        error_bookmark["error"] = failed_info["reason"]
+                        error_bookmark["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        bookmarks_with_content.append(error_bookmark)
+                    failed_records.append(failed_info)
 
         end_time = time.time()
         print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")

@@ -12,7 +12,7 @@ BookmarkSummarizer is a powerful tool that crawls your browsers' bookmarks, gene
 
 ## ✨ Key Features
 
-- 🔍 **Smart Bookmark Crawling**: Automatically extract content from Chrome bookmarks by fetching the bookmarks' URLs webpages content.
+- 🔍 **Smart Bookmark Crawling**: Automatically extract content from your browsers' bookmarks by fetching the bookmarks' URLs webpages content.
 - 🤖 **AI Summary Generation**: Create high-quality summaries for each bookmark using large language models
 - 🚀 **Blazingly fast and scalable full-text fuzzy search**: Rocket fast fuzzy search indexing and retrieval based on Whoosh, supporting millions of bookmarks, all offline!
 - 🔄 **Parallel Processing**: Efficient multi-threaded crawling to significantly reduce processing time

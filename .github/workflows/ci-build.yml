@@ -36,7 +36,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-    - name: Install this module
+    - name: Install this Python app
       run: |
         python -m pip install --upgrade --editable .[test] --verbose --use-pep517
     - name: Test with pytest

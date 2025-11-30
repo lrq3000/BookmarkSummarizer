@@ -46,50 +46,32 @@ def main(bookmark: dict) -> dict:
             title = metadata.get('title', bookmark.get('title', 'Unknown Title'))
             author_name = metadata.get('author_name', 'Unknown Channel')
 
-            # Update title to "Video title, by Channel name"
-            bookmark['title'] = f"{title}, by {author_name}"
-
             # Fetch transcript
             try:
-                # Try to get manual transcript first, fallback to auto-generated
+                # Use the simpler API which automatically tries English first
+                # then falls back to other available languages
                 # Pass the session with custom User-Agent to the API to prevent "YouTube is blocking requests from your IP" errors
                 api = YouTubeTranscriptApi(http_client=session)
-                transcript_list = api.list(video_id)
-                transcript = None
+                print(f"Attempting to fetch transcript for video {video_id}...")
+                transcript_data = api.fetch(video_id)
+                print(f"Fetched transcript data: {type(transcript_data)}, length: {len(transcript_data) if transcript_data else 0}")
 
-                # Prefer manual transcript
-                for t in transcript_list:
-                    if t.is_generated:
-                        continue  # Skip auto-generated
-                    try:
-                        transcript = t.fetch()
-                        break
-                    except Exception:
-                        continue
-
-                # If no manual transcript, try auto-generated
-                if transcript is None:
-                    for t in transcript_list:
-                        if t.is_generated:
-                            try:
-                                transcript = t.fetch()
-                                break
-                            except Exception:
-                                continue
-
-                if transcript:
+                if transcript_data:
                     formatter = TextFormatter()
-                    transcript_text = formatter.format_transcript(transcript)
+                    transcript_text = formatter.format_transcript(transcript_data)
+                    print(f"Formatted transcript text length: {len(transcript_text)}")
                     # Combine description and transcript
                     description = metadata.get('description', '')
-                    bookmark['description'] = f"{description}\n\n{transcript_text}"
+                    bookmark['description'] = f"{description}\n\n{transcript_text}" if description else transcript_text
                 else:
                     # No transcript available, just use description
-                    print(f"No subtitles found for video {video_id}")
+                    print(f"No subtitles found for video {video_id} (transcript_data is empty)")
                     bookmark['description'] = metadata.get('description', '')
 
             except Exception as e:
-                print(f"Failed to fetch transcript for video {video_id}: {e}")
+                print(f"Failed to fetch transcript for video {video_id}: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fallback to just description
                 bookmark['description'] = metadata.get('description', '')
 

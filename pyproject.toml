@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookmark-summarizer"
-version = "0.4.1"
+version = "0.4.2"
 description = "BookmarkSummarizer is a powerful tool that crawls your Chrome bookmarks, generates summaries using large language models, and turns them into a personal knowledge base. Easily search and utilize all your bookmarked web resources without manual organization."
 readme = {file = "README.MD", content-type = "text/markdown"}
 license = {text = "Apache-2.0"}
@@ -85,13 +85,13 @@ include = ["bookmark_summarizer*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=bookmark_summarizer --cov-report=html --cov-report=term-missing"
+addopts = "-ra -q --cov=. --cov-report=html --cov-report=term-missing"
 testpaths = [
     "tests"
 ]
 
 [tool.coverage.run]
-source = ["bookmark_summarizer"]
+source = ["."]
 omit = [
     "*/tests/*",
     "*/test_*.py"

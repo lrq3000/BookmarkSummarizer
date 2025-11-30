@@ -56,7 +56,9 @@ jobs:
         verbose: true
     - name: Build sdist (necessary for the other tests below)
       if: ${{ matrix.python-version == '*' }}
-      run: python -sBm build
+      run: |
+        pip install --upgrade build
+        python -sBm build
     - name: Twine check
       if: ${{ matrix.python-version == '*' }}
       run: |

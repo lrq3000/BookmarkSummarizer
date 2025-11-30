@@ -43,11 +43,11 @@ def test_api_connection_wrapper():
          patch('crawl.call_deepseek_api', return_value="Response"):
 
         result = crawl.test_api_connection(model_config)
-        assert isinstance(result, bool)
+        assert result is True
 
 def test_crawl_workflow(tmp_path, test_bookmarks_file):
     """Test the main crawling workflow with mocked network calls."""
-    bookmarks_path, bookmarks_data = test_bookmarks_file
+    _bookmarks_path, bookmarks_data = test_bookmarks_file
     lmdb_path = str(tmp_path / "test_crawl.lmdb")
 
     # Mock fetch_webpage_content to return dummy data
@@ -101,7 +101,7 @@ def test_crawl_deduplication(tmp_path):
 
         crawl.init_lmdb(map_size=10485760)
         try:
-            results, failed, added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+            results, _failed, _added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
 
             # Should process first, skip second
             assert len(results) == 1

@@ -53,9 +53,12 @@ def test_load(dummy_lmdb):
     try:
         bookmarks = searcher.load_bookmarks_from_lmdb()
         print(f"Loaded {len(bookmarks)} bookmarks")
-        assert len(bookmarks) == 1
-        assert bookmarks[0]['title'] == 'Example'
     except Exception as e:
         pytest.fail(f"Error loading: {e}")
+
+    # Assertions outside try block for clearer failure messages
+    try:
+        assert len(bookmarks) == 1
+        assert bookmarks[0]['title'] == 'Example'
     finally:
         searcher.cleanup_lmdb()

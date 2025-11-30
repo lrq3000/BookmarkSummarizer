@@ -4,7 +4,7 @@
 # and https://www.youtube.com/watch?v=l6fV09z5XHk
 # and https://py-pkgs.org/08-ci-cd#uploading-to-testpypi-and-pypi
 
-name: ci-cd
+name: Releases test, coverage and upload to Test PyPi and PyPi
 
 # Build only on creation of new releases
 on:

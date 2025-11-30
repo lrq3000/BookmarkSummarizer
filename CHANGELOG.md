@@ -7,7 +7,9 @@
 
 ## [未发布]
 
-### 0.4.0
+### 0.4.1
+
+Refactored crawl.py for parallel processing.
 
 There was an intentionally sequential path that was triggered when a --limit was set, which was the primary cause of the non-parallel behavior. It was replaced with a single, unified parallel implementation that now correctly handles both limited and unlimited crawls.
 

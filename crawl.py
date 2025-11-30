@@ -717,6 +717,25 @@ def cleanup_lmdb():
     except Exception as e:
         logger.error(f"Error during LMDB cleanup: {e}")
 
+# Get path to custom parsers directory handling frozen environments
+def get_custom_parsers_dir():
+    """
+    Get the directory containing custom parsers, handling both normal and frozen environments.
+
+    In a frozen (PyInstaller) environment, resources are extracted to a temporary
+    directory pointed to by sys._MEIPASS. In a normal Python environment,
+    they are relative to the script's location.
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller creates a temporary bundle directory at sys._MEIPASS
+        # This is where --add-data files are extracted
+        base_dir = sys._MEIPASS
+    else:
+        # Standard development environment
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    return os.path.join(base_dir, 'custom_parsers')
+
 # Load custom parsers from custom_parsers/ directory
 def load_custom_parsers(parser_filter=None):
     """
@@ -731,13 +750,7 @@ def load_custom_parsers(parser_filter=None):
         list: List of callable parser functions, sorted alphabetically by filename.
     """
     parsers = []
-    if getattr(sys, 'frozen', False):
-        # PyInstaller creates a temporary bundle directory at sys._MEIPASS
-        base_dir = sys._MEIPASS
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    parsers_dir = os.path.join(base_dir, 'custom_parsers')
+    parsers_dir = get_custom_parsers_dir()
 
     if not os.path.exists(parsers_dir):
         print(f"custom_parsers/ directory not found at {parsers_dir}, skipping custom parsers")
@@ -2325,7 +2338,7 @@ def parse_args():
     # Add custom parsers filter argument
     # Get list of available parsers for help message
     available_parsers = []
-    parsers_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'custom_parsers')
+    parsers_dir = get_custom_parsers_dir()
     if os.path.exists(parsers_dir):
         available_parsers = [f[:-3] for f in os.listdir(parsers_dir) 
                             if f.endswith('.py') and not f.startswith('__')]

@@ -43,7 +43,7 @@ def build_executable():
                 "requests", "bs4", "chardet", "tqdm", "selenium", "webdriver_manager",
                 "lxml", "whoosh", "fastapi", "uvicorn", "browser_history", "lmdb",
                 "custom_parsers.youtube", "custom_parsers.zhihu",
-                "custom_parsers.a_suspended_tabs", "custom_parsers.0_suspended_tabs"
+                "custom_parsers.a_suspended_tabs"
             ]
         },
         {

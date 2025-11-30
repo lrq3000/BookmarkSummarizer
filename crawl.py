@@ -2016,22 +2016,70 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     last_flush_time = time.time()
 
     def flush_to_disk(current_bookmarks, current_failed, max_batch_size=50):
-        # ... (Implementation remains the same, but simplified for clarity here)
+        """Persist crawled bookmarks and failed records to LMDB (or fall back to memory)."""
+        if not current_bookmarks and not current_failed:
+            return
+
+        # Fallback mode: store in-memory structures only
+        if use_fallback or lmdb_env is None:
+            fallback_bookmarks.extend(current_bookmarks)
+            fallback_failed_records.extend(current_failed)
+            for bookmark in current_bookmarks:
+                url = bookmark.get("url")
+                if url:
+                    url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                    fallback_url_hashes.add(url_hash)
+                content = bookmark.get("content")
+                if content:
+                    content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                    fallback_content_hashes.add(content_hash)
+            return
+
         try:
             # Batch process bookmarks
             for i in range(0, len(current_bookmarks), max_batch_size):
                 batch = current_bookmarks[i:i + max_batch_size]
                 with lmdb_env.begin(write=True) as txn:
+                    cursor = txn.cursor(bookmarks_db)
+                    last_key = int.from_bytes(cursor.key(), 'big') if cursor.last() else 0
+
                     for bookmark in batch:
-                        # ... (database write logic)
-                        pass
+                        url = bookmark.get("url", "")
+
+                        # Reuse existing key when possible
+                        bookmark_key_bytes = None
+                        if url:
+                            bookmark_key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
+
+                        if bookmark_key_bytes is None:
+                            last_key += 1
+                            bookmark_key_bytes = last_key.to_bytes(4, 'big')
+                            if url:
+                                txn.put(url.encode('utf-8'), bookmark_key_bytes, db=url_to_key_db)
+
+                        txn.put(bookmark_key_bytes, safe_pickle(bookmark), db=bookmarks_db)
+
+                        if url:
+                            url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                            txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
+
+                        content = bookmark.get("content")
+                        if content:
+                            content_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                            txn.put(content_hash.encode('utf-8'), b'1', db=content_hashes_db)
+
+                        update_secondary_indexes(txn, bookmark_key_bytes, bookmark)
+
             # Batch process failed records
             for i in range(0, len(current_failed), max_batch_size):
                 batch = current_failed[i:i + max_batch_size]
                 with lmdb_env.begin(write=True) as txn:
+                    cursor = txn.cursor(failed_records_db)
+                    last_failed_key = int.from_bytes(cursor.key(), 'big') if cursor.last() else 0
+
                     for failed_record in batch:
-                        # ... (database write logic)
-                        pass
+                        last_failed_key += 1
+                        txn.put(last_failed_key.to_bytes(4, 'big'), safe_pickle(failed_record), db=failed_records_db)
         except Exception as e:
             print(f"Error during periodic flush: {e}")
             raise
@@ -2106,8 +2154,6 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         if bookmarks_with_content or failed_records:
             print("Performing final flush to LMDB...")
             flush_to_disk(bookmarks_with_content, failed_records)
-            bookmarks_with_content.clear()
-            failed_records.clear()
 
     return bookmarks_with_content, failed_records, new_bookmarks_added
 

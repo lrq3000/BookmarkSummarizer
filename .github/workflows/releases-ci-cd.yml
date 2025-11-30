@@ -57,7 +57,7 @@ jobs:
         python -m pip install --upgrade build
         python -sBm build
     - name: Save dist/ content for reuse in other GitHub Workflow blocks
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         path: dist/*
 
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Unpack default artifact into dist/
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           # unpacks default artifact into dist/
           # if `name: artifact` is omitted, the action will create extra parent dir
@@ -95,7 +95,7 @@ jobs:
     needs: [testbuild, upload_test_pypi]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           # unpacks default artifact into dist/
           # if `name: artifact` is omitted, the action will create extra parent dir

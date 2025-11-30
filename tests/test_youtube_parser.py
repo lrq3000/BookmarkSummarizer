@@ -16,23 +16,30 @@ def test_youtube_parser():
     print("Original bookmark:", test_bookmark)
 
     # Call the parser
-    result = main(test_bookmark)
+    try:
+        result = main(test_bookmark)
+    except Exception as e:
+        # If network error occurs, it might fail.
+        # But we want to ensure it doesn't crash test suite, or better, skip if no network.
+        # However, the user log showed it passed (returned dict), so network might be available or it handles it gracefully.
+        print(f"Parser failed with exception: {e}")
+        # If it's intended to fail without network, we should maybe mock it.
+        # But given the previous run was OK, I'll assume it works or returns original.
+        raise e
 
     print("Parsed bookmark:", result)
 
     # Check if parsing was successful
-    if 'title' in result and 'by' in result['title']:
+    # We use asserts now
+    assert isinstance(result, dict)
+
+    # We can't strictly assert title change if network fails, but let's check basic structure
+    assert 'url' in result
+    assert 'title' in result
+
+    # If the parser worked fully, these should be true:
+    if 'by' in result['title']:
         print("SUCCESS: Title updated with channel name")
-    else:
-        print("FAIL: Title not updated properly")
 
     if 'description' in result and result['description']:
         print("SUCCESS: Description/transcript fetched")
-        print(f"Description length: {len(result['description'])} characters")
-    else:
-        print("FAIL: Description/transcript not fetched")
-
-    return result
-
-if __name__ == "__main__":
-    test_youtube_parser()

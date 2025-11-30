@@ -58,6 +58,7 @@ jobs:
         python -m pip install --upgrade build
         python -sBm build
     - name: Save dist/ content for reuse in other GitHub Workflow blocks
+      if: matrix.os == 'ubuntu-latest'
       uses: actions/upload-artifact@v4
       with:
         path: dist/*

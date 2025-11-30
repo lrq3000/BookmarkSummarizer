@@ -29,45 +29,51 @@ def main(bookmark: dict) -> dict:
     video_id = match.group(1)
 
     try:
-        # Fetch video metadata using YouTube API (oEmbed)
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        response = requests.get(oembed_url, timeout=10)
-        response.raise_for_status()
-        metadata = response.json()
+        # Create a session with a browser-like User-Agent to avoid being blocked by YouTube
+        # This is crucial as YouTube often blocks requests from default library User-Agents (like python-requests)
+        with requests.Session() as session:
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9"
+            })
 
-        title = metadata.get('title', bookmark.get('title', 'Unknown Title'))
-        author_name = metadata.get('author_name', 'Unknown Channel')
+            # Fetch video metadata using YouTube API (oEmbed)
+            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+            response = session.get(oembed_url, timeout=10)
+            response.raise_for_status()
+            metadata = response.json()
 
-        # Update title to "Video title, by Channel name"
-        bookmark['title'] = f"{title}, by {author_name}"
+            title = metadata.get('title', bookmark.get('title', 'Unknown Title'))
+            author_name = metadata.get('author_name', 'Unknown Channel')
 
-        # Fetch transcript
-        try:
-            # Use the simpler API which automatically tries English first
-            # then falls back to other available languages
-            api = YouTubeTranscriptApi()
-            print(f"Attempting to fetch transcript for video {video_id}...")
-            transcript_data = api.fetch(video_id)
-            print(f"Fetched transcript data: {type(transcript_data)}, length: {len(transcript_data) if transcript_data else 0}")
-            
-            if transcript_data:
-                formatter = TextFormatter()
-                transcript_text = formatter.format_transcript(transcript_data)
-                print(f"Formatted transcript text length: {len(transcript_text)}")
-                # Combine description and transcript
-                description = metadata.get('description', '')
-                bookmark['description'] = f"{description}\n\n{transcript_text}" if description else transcript_text
-            else:
-                # No transcript available, just use description
-                print(f"No subtitles found for video {video_id} (transcript_data is empty)")
+            # Fetch transcript
+            try:
+                # Use the simpler API which automatically tries English first
+                # then falls back to other available languages
+                # Pass the session with custom User-Agent to the API to prevent "YouTube is blocking requests from your IP" errors
+                api = YouTubeTranscriptApi(http_client=session)
+                print(f"Attempting to fetch transcript for video {video_id}...")
+                transcript_data = api.fetch(video_id)
+                print(f"Fetched transcript data: {type(transcript_data)}, length: {len(transcript_data) if transcript_data else 0}")
+
+                if transcript_data:
+                    formatter = TextFormatter()
+                    transcript_text = formatter.format_transcript(transcript_data)
+                    print(f"Formatted transcript text length: {len(transcript_text)}")
+                    # Combine description and transcript
+                    description = metadata.get('description', '')
+                    bookmark['description'] = f"{description}\n\n{transcript_text}" if description else transcript_text
+                else:
+                    # No transcript available, just use description
+                    print(f"No subtitles found for video {video_id} (transcript_data is empty)")
+                    bookmark['description'] = metadata.get('description', '')
+
+            except Exception as e:
+                print(f"Failed to fetch transcript for video {video_id}: {type(e).__name__}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to just description
                 bookmark['description'] = metadata.get('description', '')
-
-        except Exception as e:
-            print(f"Failed to fetch transcript for video {video_id}: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback to just description
-            bookmark['description'] = metadata.get('description', '')
 
     except Exception as e:
         print(f"Failed to fetch YouTube metadata for video {video_id}: {e}")

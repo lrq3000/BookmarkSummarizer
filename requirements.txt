@@ -13,5 +13,5 @@ fastapi>=0.104.1 # Used to build APIs
 uvicorn[standard]>=0.24.0 # Used to run the FastAPI server
 browser-history
 tomli; python_version < "3.11"  # TOML parser for older Python versions
-youtube-transcript-api>=0.6.2  # For fetching YouTube transcripts
+youtube-transcript-api>=1.2.3  # For fetching YouTube transcripts
 lmdb>=1.4.1  # Lightning Memory-Mapped Database for persistent storage

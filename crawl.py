@@ -768,6 +768,13 @@ def load_custom_parsers(parser_filter=None):
             
             module_path = os.path.join(parsers_dir, filename)
 
+            # Skip if parser_filter is specified and this parser is not in the list
+            if parser_filter is not None and module_name not in parser_filter:
+                print(f"Skipping custom parser (not in filter): {module_name}")
+                continue
+
+            module_path = os.path.join(parsers_dir, filename)
+
             try:
                 # Load the module dynamically
                 spec = importlib.util.spec_from_file_location(module_name, module_path)

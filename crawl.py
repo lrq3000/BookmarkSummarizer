@@ -718,10 +718,14 @@ def cleanup_lmdb():
         logger.error(f"Error during LMDB cleanup: {e}")
 
 # Load custom parsers from custom_parsers/ directory
-def load_custom_parsers():
+def load_custom_parsers(parser_filter=None):
     """
     Dynamically discover and load custom parsers from the custom_parsers/ directory.
     Each parser should be a Python module with a 'main(bookmark: dict) -> dict' function.
+
+    Parameters:
+        parser_filter (list): Optional list of parser names (without .py extension) to load.
+                             If None, all parsers are loaded.
 
     Returns:
         list: List of callable parser functions, sorted alphabetically by filename.
@@ -742,8 +746,14 @@ def load_custom_parsers():
     # Iterate through all .py files in custom_parsers/
     for filename in os.listdir(parsers_dir):
         if filename.endswith('.py') and not filename.startswith('__'):
-            module_path = os.path.join(parsers_dir, filename)
             module_name = filename[:-3]  # Remove .py extension
+            
+            # Skip if parser_filter is specified and this parser is not in the list
+            if parser_filter is not None and module_name not in parser_filter:
+                print(f"Skipping custom parser (not in filter): {module_name}")
+                continue
+            
+            module_path = os.path.join(parsers_dir, filename)
 
             try:
                 # Load the module dynamically
@@ -2312,6 +2322,25 @@ def parse_args():
         help='Maximum delay in seconds between requests (default: 5.0)'
     )
 
+    # Add custom parsers filter argument
+    # Get list of available parsers for help message
+    available_parsers = []
+    parsers_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'custom_parsers')
+    if os.path.exists(parsers_dir):
+        available_parsers = [f[:-3] for f in os.listdir(parsers_dir) 
+                            if f.endswith('.py') and not f.startswith('__')]
+        available_parsers.sort()
+    
+    parsers_help = 'Pipe-delimited list of custom parser filenames (without .py extension) to enable. If not specified, all parsers are loaded.'
+    if available_parsers:
+        parsers_help += f' Available parsers: {", ".join(available_parsers)}. Example: --parsers "youtube|zhihu"'
+    
+    parser.add_argument(
+        '--parsers',
+        type=str,
+        help=parsers_help
+    )
+
     return parser.parse_args()
 
 # Main function to orchestrate the bookmark crawling and summarization process.
@@ -2330,7 +2359,12 @@ def main():
 
     # Load custom parsers at startup
     global custom_parsers
-    custom_parsers = load_custom_parsers()
+    # Parse the parsers filter if provided
+    parser_filter = None
+    if args.parsers:
+        parser_filter = [p.strip() for p in args.parsers.split('|') if p.strip()]
+        print(f"Custom parser filter enabled: {parser_filter}")
+    custom_parsers = load_custom_parsers(parser_filter=parser_filter)
 
     # Load TOML configuration
     config_data = load_config(args.config)

@@ -66,7 +66,9 @@ jobs:
         twine check "dist/*"
     - name: pyproject.toml validity
       if: ${{ matrix.python-version == '*' }}
-      run: validate-pyproject pyproject.toml -v
+      run: |
+        pip install --upgrade validate-pyproject
+        validate-pyproject pyproject.toml -v
     - name: Check for potential security issues
       run: |
         pip install --upgrade bandit

@@ -85,13 +85,13 @@ include = ["bookmark_summarizer*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=bookmark_summarizer --cov-report=html --cov-report=term-missing"
+addopts = "-ra -q --cov=. --cov-report=html --cov-report=term-missing"
 testpaths = [
     "tests"
 ]
 
 [tool.coverage.run]
-source = ["bookmark_summarizer"]
+source = ["."]
 omit = [
     "*/tests/*",
     "*/test_*.py"

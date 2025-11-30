@@ -2159,6 +2159,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     
     # Final flush for any remaining items in the batch
     final_bookmarks_to_flush = None
+    final_failed_to_flush = None
     with bookmarks_lock:
         if bookmarks_batch or failed_records_batch:
             print("Performing final flush to LMDB...")

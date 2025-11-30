@@ -25,7 +25,7 @@ def test_youtube_parser():
         print(f"Parser failed with exception: {e}")
         # If it's intended to fail without network, we should maybe mock it.
         # But given the previous run was OK, I'll assume it works or returns original.
-        raise e
+        raise
 
     print("Parsed bookmark:", result)
 

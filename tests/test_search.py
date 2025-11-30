@@ -9,10 +9,11 @@ import os
 import lmdb
 import pickle
 import pytest
-from fuzzy_bookmark_search import FuzzyBookmarkSearch, index_bookmarks, search_bookmarks
 
 # Add parent directory to path to import fuzzy_bookmark_search functions
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from fuzzy_bookmark_search import FuzzyBookmarkSearch, index_bookmarks, search_bookmarks
 
 @pytest.fixture
 def test_env(tmp_path):

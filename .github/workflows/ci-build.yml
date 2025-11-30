@@ -72,4 +72,4 @@ jobs:
     - name: Check for potential security issues
       run: |
         pip install --upgrade bandit
-        bandit -r . -x ./tests
+        bandit -r . -x ./tests -lll

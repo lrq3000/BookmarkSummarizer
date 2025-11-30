@@ -7,19 +7,20 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fuzzy_bookmark_search import lmdb_open, load_bookmarks_from_lmdb, cleanup_lmdb
+from fuzzy_bookmark_search import FuzzyBookmarkSearch
 
 def test_load():
     print("Opening LMDB...")
-    lmdb_open()
+    searcher = FuzzyBookmarkSearch()
+    searcher.lmdb_open()
     print("Loading bookmarks...")
     try:
-        bookmarks = load_bookmarks_from_lmdb()
+        bookmarks = searcher.load_bookmarks_from_lmdb()
         print(f"Loaded {len(bookmarks)} bookmarks")
     except Exception as e:
         print(f"Error loading: {e}")
     finally:
-        cleanup_lmdb()
+        searcher.cleanup_lmdb()
 
 if __name__ == "__main__":
     test_load()

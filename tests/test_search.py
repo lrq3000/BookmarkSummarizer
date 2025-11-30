@@ -11,7 +11,7 @@ import json
 # Add parent directory to path to import fuzzy_bookmark_search functions
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fuzzy_bookmark_search import load_bookmarks_data, lmdb_open, cleanup_lmdb, search_bookmarks
+from fuzzy_bookmark_search import FuzzyBookmarkSearch, search_bookmarks
 
 def test_lmdb_loading():
     """Test loading bookmarks from LMDB database."""
@@ -19,11 +19,12 @@ def test_lmdb_loading():
 
     # Initialize LMDB
     print("Opening LMDB database...")
-    lmdb_open()
+    searcher = FuzzyBookmarkSearch()
+    searcher.lmdb_open()
 
     # Load bookmarks from LMDB
     print("Loading bookmarks from LMDB...")
-    bookmarks_gen = load_bookmarks_data()
+    bookmarks_gen = searcher.load_bookmarks_data()
 
     # Convert generator to list for counting
     bookmarks_list = list(bookmarks_gen)
@@ -85,12 +86,14 @@ def test_persistence():
     print("\n=== Testing Data Persistence ===")
 
     # Load bookmarks again to verify persistence
-    bookmarks_gen = load_bookmarks_data()
+    searcher = FuzzyBookmarkSearch()
+    searcher.lmdb_open()
+    bookmarks_gen = searcher.load_bookmarks_data()
     bookmarks_list = list(bookmarks_gen)
     print(f"Persistence check: {len(bookmarks_list)} bookmarks still available")
 
     # Cleanup
-    cleanup_lmdb()
+    searcher.cleanup_lmdb()
     print("LMDB cleanup completed")
 
     return len(bookmarks_list)

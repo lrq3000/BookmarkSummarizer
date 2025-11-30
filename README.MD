@@ -4,7 +4,12 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/python-3.6+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/LLM-enabled-green.svg" alt="LLM">
+
+  [![PyPI-Status][1]][2] [![PyPI-Versions][3]][2] [![PyPi-License][4]][2] [![PyPI-Downloads][5]][2]
+
+  [![Build-Status][7]][8] [![Coverage-Status][9]][10]
 </p>
+
 
 BookmarkSummarizer is a powerful tool that crawls your browsers' bookmarks, generates summaries using large language models, and turns them into a personal knowledge base. Easily search and utilize all your bookmarked web resources without manual organization. Supports all common desktop browsers (Chrome, Firefox, Edge, Safari) as well as uncommon ones (Chromium, Brave, Vivaldi, Opera, etc).
 
@@ -219,3 +224,14 @@ Development of new features and maintenance is done since Novembre 2025 by [Step
 ## 📄 License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+
+[1]: https://img.shields.io/pypi/v/BookmarkSummarizer.svg
+[2]: https://pypi.org/project/BookmarkSummarizer
+[3]: https://img.shields.io/pypi/pyversions/BookmarkSummarizer.svg?logo=python&logoColor=white
+[4]: https://img.shields.io/pypi/l/BookmarkSummarizer.svg
+[5]: https://img.shields.io/pypi/dm/BookmarkSummarizer.svg?label=pypi%20downloads&logo=python&logoColor=white
+[7]: https://github.com/lrq3000/BookmarkSummarizer/actions/workflows/ci-build.yml/badge.svg?event=push
+[8]: https://github.com/lrq3000/BookmarkSummarizer/actions/workflows/ci-build.yml
+[9]: https://codecov.io/gh/lrq3000/BookmarkSummarizer/graph/badge.svg?token=NuNgXwZqAO
+[10]: https://codecov.io/gh/lrq3000/BookmarkSummarizer

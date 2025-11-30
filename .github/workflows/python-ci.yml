@@ -5,13 +5,15 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: [3.9, '3.10', '3.11']
+        os: [ubuntu-latest, windows-latest]
+        python-version: [3.9, '3.10', '3.11', "*"]
 
     steps:
     - uses: actions/checkout@v3
@@ -34,9 +36,6 @@ jobs:
       run: |
         pip install bandit
         bandit -r . -x ./tests
-    - name: Setup test environment
-      run: |
-        cp .env.example .env
     - name: Test module imports
       run: |
-        python -c "import index" 
+        python -c "import index"

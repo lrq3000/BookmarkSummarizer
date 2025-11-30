@@ -29,9 +29,17 @@ def main(bookmark: dict) -> dict:
     video_id = match.group(1)
 
     try:
+        # Create a session with a browser-like User-Agent to avoid being blocked by YouTube
+        # This is crucial as YouTube often blocks requests from default library User-Agents (like python-requests)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        })
+
         # Fetch video metadata using YouTube API (oEmbed)
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        response = requests.get(oembed_url, timeout=10)
+        response = session.get(oembed_url, timeout=10)
         response.raise_for_status()
         metadata = response.json()
 
@@ -44,7 +52,8 @@ def main(bookmark: dict) -> dict:
         # Fetch transcript
         try:
             # Try to get manual transcript first, fallback to auto-generated
-            api = YouTubeTranscriptApi()
+            # Pass the session with custom User-Agent to the API to prevent "YouTube is blocking requests from your IP" errors
+            api = YouTubeTranscriptApi(http_client=session)
             transcript_list = api.list(video_id)
             transcript = None
 

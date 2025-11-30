@@ -2165,6 +2165,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             print("Performing final flush to LMDB...")
             final_bookmarks_to_flush = list(bookmarks_batch)
             final_failed_to_flush = list(failed_records_batch)
+            # Clear temporary lists containing the current batch of records that have now been flushed to the db, so we clean to ensure we don't write the same data multiple times. The main result lists are preserved and returned correctly in all_bookmarks_with_content and all_failed_records.
             bookmarks_batch.clear()
             failed_records_batch.clear()
 

@@ -60,7 +60,7 @@ pip install -e .
 model_type=ollama  # options: openai, deepseek, qwen, ollama
 api_key=your_api_key_here
 api_base=http://localhost:11434  # ollama local endpoint or other model api address
-model_name=gemma3:1b  # or other supported model
+model_name=qwen3:1.7b  # or other supported model
 max_tokens=1000
 temperature=0.3
 ```
@@ -175,7 +175,7 @@ BookmarkSummarizer uses advanced large language models to generate high-quality 
 - Supporting various mainstream large language models
 - Supportign 100% offline generation via ollama for complete privacy
 
-Tip: if ollama is used, it is advised to set the context window to 128k and use a model that supports such a wide context window such as gemma3:1b, so that summaries are done on the whole bookmark's content without truncation.
+Tip: if ollama is used, it is advised to set the context window to 128k and use a model that supports such a wide context window such as qwen3:4b (supports 256k context!) or qwen3:1.7b or qwen3:0.6b (40k context) for less power machines, so that summaries are done on the whole bookmark's full-text content without truncation. `gemma3:1b` can also be interesting (32k context) but it has hallucination issues when there is not much full-text content.
 
 ### Checkpoint Recovery
 
@@ -224,6 +224,16 @@ Development of new features and maintenance is done since Novembre 2025 by [Step
 ## 📄 License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+## Suggested complementary 3rd-party bookmarks tools
+
+Here is a non-exhaustive list of complementary **opensource** 3rd-party extensions or tools that can complement BookmarkSummarizer:
+* [Search Bookmarks, History and Tabs](https://github.com/Fannon/search-bookmarks-history-and-tabs): Fast bookmarks fuzzy search engine on URL and bookmark's title (not the full-page content). Chrome extension.
+* [Full text tabs forever (FTTF)](https://github.com/iansinnott/full-text-tabs-forever): Full-text search of historically visited pages. This has the advantage of causing no network overhead (no additional HTTP request is done, the pages you access are indexed on-the-fly), hence no risk of rate limiting/IP banning. Chrome extension.
+* [Floccus](https://github.com/floccusaddon/floccus): Autosync bookmarks (and hence sessions if using InfiniTabs) between browsers (also works on mobile via native Floccus app on F-Droid or [Mises](https://github.com/mises-id/mises-browser-core) or [Cromite](https://github.com/uazo/cromite/)). Chrome extension.
+* [TidyMark](https://github.com/PanHywel/TidyMark): Reorganize/group bookmarks (supports cloud or offline ollama). Chrome extension.
+* [Wherewasi](https://github.com/Jay-Karia/wherewasi): Temporal and semantic tabs clustering into sessions using cloud Gemini AI. Chrome extension.
+* LinkWarden or ArchiveBox: alternatives to BookmarkSummarizer to index/archive the full-text content pointed at by the bookmarks.
 
 
 [1]: https://img.shields.io/pypi/v/BookmarkSummarizer.svg

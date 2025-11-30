@@ -1,74 +1,110 @@
 #!/usr/bin/env python3
 """
-Test script to run crawl.py with test bookmarks data.
-This script loads test bookmarks and runs the crawling logic directly.
+Test script to run crawl.py logic using pytest and mocks.
 """
 
 import json
 import sys
 import os
+import pytest
+from unittest.mock import patch, MagicMock
 
 # Add project root to path to import crawl.py functions
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from crawl import parallel_fetch_bookmarks, cleanup_lmdb, ModelConfig, generate_summaries_for_bookmarks, test_api_connection, init_lmdb
+import crawl
 
-def main():
-    print("=== LMDB Migration Test: Crawling Phase ===")
+@pytest.fixture
+def test_bookmarks_file(tmp_path):
+    bookmarks_file = tmp_path / "test_bookmarks.json"
+    bookmarks = [
+        {
+            "url": "https://example.com",
+            "name": "Example",
+            "type": "url"
+        },
+        {
+            "url": "https://google.com",
+            "name": "Google",
+            "type": "url"
+        }
+    ]
+    with open(bookmarks_file, 'w', encoding='utf-8') as f:
+        json.dump(bookmarks, f)
+    return bookmarks_file, bookmarks
 
-    # Initialize LMDB
-    print("Initializing LMDB database...")
-    init_lmdb()
+def test_api_connection_wrapper():
+    """Test the API connection check wrapper."""
+    model_config = crawl.ModelConfig()
 
-    # Load test bookmarks
-    print("Loading test bookmarks...")
-    test_bookmarks_path = os.path.join(os.path.dirname(__file__), 'test_bookmarks.json')
-    with open(test_bookmarks_path, 'r', encoding='utf-8') as f:
-        test_bookmarks = json.load(f)
+    # Mock API calls to prevent network usage
+    with patch('crawl.call_ollama_api', return_value="Response"), \
+         patch('crawl.call_qwen_api', return_value="Response"), \
+         patch('crawl.call_deepseek_api', return_value="Response"):
 
-    print(f"Loaded {len(test_bookmarks)} test bookmarks")
+        result = crawl.test_api_connection(model_config)
+        assert isinstance(result, bool)
 
-    # Run crawling with limit
-    print("Starting crawl with LMDB backend...")
-    bookmarks_with_content, failed_records, new_bookmarks_added = parallel_fetch_bookmarks(
-        test_bookmarks,
-        max_workers=2,  # Use fewer workers for testing
-        limit=5,  # Limit to 5 bookmarks
-        flush_interval=30,  # Shorter flush interval for testing
-        skip_unreachable=False
-    )
+def test_crawl_workflow(tmp_path, test_bookmarks_file):
+    """Test the main crawling workflow with mocked network calls."""
+    bookmarks_path, bookmarks_data = test_bookmarks_file
+    lmdb_path = str(tmp_path / "test_crawl.lmdb")
 
-    print("\nCrawl Results:")
-    print(f"- Successfully crawled: {len(bookmarks_with_content)} bookmarks")
-    print(f"- Failed to crawl: {len(failed_records)} bookmarks")
-    print(f"- New bookmarks added: {new_bookmarks_added}")
+    # Mock fetch_webpage_content to return dummy data
+    mock_result = ({
+        "url": "https://example.com",
+        "title": "Example",
+        "content": "Mock content",
+        "content_length": 12,
+        "crawl_time": "2024-01-01",
+        "crawl_method": "mock"
+    }, None)
 
-    # Test summary generation if we have content
-    if bookmarks_with_content:
-        print("\n=== Testing Summary Generation ===")
-        model_config = ModelConfig()
+    with patch('crawl.lmdb_storage_path', lmdb_path), \
+         patch('crawl.fetch_webpage_content', return_value=mock_result):
 
-        # Test API connection first
-        print("Testing API connection...")
-        if not test_api_connection(model_config):
-            print("API connection failed - skipping summary generation")
-        else:
-            print("API connection successful - generating summaries...")
-            try:
-                bookmarks_with_summaries = generate_summaries_for_bookmarks(
-                    bookmarks_with_content,
-                    model_config,
-                    force_recompute=False
-                )
-                print(f"Summary generation completed for {len(bookmarks_with_summaries)} bookmarks")
-            except Exception as e:
-                print(f"Summary generation failed: {e}")
+        # Initialize LMDB
+        crawl.init_lmdb(map_size=10485760)
 
-    # Cleanup
-    print("\nCleaning up LMDB resources...")
-    cleanup_lmdb()
+        try:
+            # Run crawling
+            bookmarks_with_content, failed_records, new_bookmarks_added = crawl.parallel_fetch_bookmarks(
+                bookmarks_data,
+                max_workers=2,
+                limit=5,
+                flush_interval=1,
+                skip_unreachable=False
+            )
 
-    print("=== Crawling Phase Test Complete ===")
+            # Both bookmarks return same mock result, but they are processed
+            assert len(bookmarks_with_content) == 2
+            assert new_bookmarks_added == 2
+            assert failed_records == []
+            assert bookmarks_with_content[0]['content'] == "Mock content"
 
-if __name__ == "__main__":
-    main()
+        finally:
+            crawl.cleanup_lmdb()
+
+def test_crawl_deduplication(tmp_path):
+    """Test URL deduplication."""
+    lmdb_path = str(tmp_path / "test_dedup.lmdb")
+
+    bookmarks = [
+        {"url": "https://unique.com", "name": "Unique", "type": "url"},
+        {"url": "https://unique.com", "name": "Unique 2", "type": "url"} # Duplicate
+    ]
+
+    mock_result = ({"url": "https://unique.com", "content": "C", "title": "T"}, None)
+
+    with patch('crawl.lmdb_storage_path', lmdb_path), \
+         patch('crawl.fetch_webpage_content', return_value=mock_result):
+
+        crawl.init_lmdb(map_size=10485760)
+        try:
+            results, failed, added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+
+            # Should process first, skip second
+            assert len(results) == 1
+
+        finally:
+            crawl.cleanup_lmdb()

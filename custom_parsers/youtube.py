@@ -76,6 +76,7 @@ def main(bookmark: dict) -> dict:
                 bookmark['description'] = f"{description}\n\n{transcript_text}"
             else:
                 # No transcript available, just use description
+                print(f"No subtitles found for video {video_id}")
                 bookmark['description'] = metadata.get('description', '')
 
         except Exception as e:

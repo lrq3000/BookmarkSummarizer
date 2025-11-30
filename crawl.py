@@ -760,6 +760,13 @@ def load_custom_parsers(parser_filter=None):
     for filename in os.listdir(parsers_dir):
         if filename.endswith('.py') and not filename.startswith('__'):
             module_name = filename[:-3]  # Remove .py extension
+            
+            # Skip if parser_filter is specified and this parser is not in the list
+            if parser_filter is not None and module_name not in parser_filter:
+                print(f"Skipping custom parser (not in filter): {module_name}")
+                continue
+            
+            module_path = os.path.join(parsers_dir, filename)
 
             # Skip if parser_filter is specified and this parser is not in the list
             if parser_filter is not None and module_name not in parser_filter:
@@ -2340,14 +2347,14 @@ def parse_args():
     available_parsers = []
     parsers_dir = get_custom_parsers_dir()
     if os.path.exists(parsers_dir):
-        available_parsers = [f[:-3] for f in os.listdir(parsers_dir)
+        available_parsers = [f[:-3] for f in os.listdir(parsers_dir) 
                             if f.endswith('.py') and not f.startswith('__')]
         available_parsers.sort()
-
+    
     parsers_help = 'Pipe-delimited list of custom parser filenames (without .py extension) to enable. If not specified, all parsers are loaded.'
     if available_parsers:
         parsers_help += f' Available parsers: {", ".join(available_parsers)}. Example: --parsers "youtube|zhihu"'
-
+    
     parser.add_argument(
         '--parsers',
         type=str,

@@ -2006,7 +2006,8 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     from concurrent.futures import as_completed
 
     bookmarks_to_process = bookmarks
-    all_bookmarks_with_content = []  # This will accumulate all results and be returned
+    all_bookmarks_with_content = []  # This will accumulate all results for bookmarks
+    all_failed_records = []  # This will accumulate all failed records
 
     # These lists will be used as temporary buffers for periodic flushing
     bookmarks_batch = []
@@ -2126,6 +2127,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                             all_bookmarks_with_content.append(error_bookmark)
                             bookmarks_batch.append(error_bookmark)
                             new_bookmarks_added += 1
+                        all_failed_records.append(failed_info)
                         failed_records_batch.append(failed_info)
 
                     if time.time() - last_flush_time >= flush_interval:
@@ -2160,9 +2162,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     if final_bookmarks_to_flush:
         flush_to_disk(final_bookmarks_to_flush, final_failed_to_flush)
 
-    # The return value for failed_records is not used in main, so it's fine to return empty.
-    # The main logic gets it from the DB.
-    return all_bookmarks_with_content, [], new_bookmarks_added
+    return all_bookmarks_with_content, all_failed_records, new_bookmarks_added
 
 # Parse command-line arguments
 def parse_args():

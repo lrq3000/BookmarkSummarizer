@@ -41,7 +41,8 @@ jobs:
         python -m pip install --upgrade --editable .[test] --verbose --use-pep517
     - name: Test with pytest
       run: |
-        coverage run --branch -m pytest . -v
+        #coverage run --branch -m pytest . -v  # Do NOT do that, because coverage is already run in pytest as specified in pyproject.toml, so this calls two nested instances of coverage, hence this will glitch out!
+        pytest -v  # run tests with coverage (as specified in pyproject.toml) and save the coverage as html and xml
         coverage report -m
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5

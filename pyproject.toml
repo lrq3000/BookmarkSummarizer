@@ -86,7 +86,7 @@ include = ["bookmark_summarizer*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=. --cov-report=html --cov-report=term-missing"
+addopts = "-ra -q --cov=. --cov-report=html --cov-report=term-missing --cov-report=xml"
 testpaths = [
     "tests"
 ]

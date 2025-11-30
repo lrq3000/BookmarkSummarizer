@@ -1648,6 +1648,7 @@ def init_webdriver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+    # Disable image loading to improve speed
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
 
@@ -2031,6 +2032,9 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                     cursor_b = txn.cursor(bookmarks_db)
                     # Determine the next available key for new entries
                     next_key_b = int.from_bytes(cursor_b.key(), 'big') + 1 if cursor_b.last() else 1
+                    # In this loop, we handle both new and existing bookmarks.
+                    # If a bookmark's URL is already in the database, we update the existing record.
+                    # Otherwise, we create a new one. This prevents data corruption and duplicates.
                     for bookmark in current_bookmarks:
                         url = bookmark.get('url')
                         if not url: continue

@@ -7,6 +7,13 @@
 
 ## [未发布]
 
+### 0.4.0
+
+There was an intentionally sequential path that was triggered when a --limit was set, which was the primary cause of the non-parallel behavior. It was replaced with a single, unified parallel implementation that now correctly handles both limited and unlimited crawls.
+
+*   **Parallel Bookmark Processing:** The processing logic now resides in the `_crawl_bookmark` worker function, which is called for every bookmark within the `ThreadPoolExecutor`. This ensures all bookmarks are processed concurrently.
+*   **Partial Flushing:** The periodic flushing is handled within the main `for future in as_completed(futures):` loop. It checks the time elapsed since the last flush and writes the latest batch of results to disk, preserving the exact same data-saving functionality as before.
+
 ### 0.3.1
 
 Big bundle of updates, with various new features and bugfixes:

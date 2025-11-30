@@ -1647,7 +1647,11 @@ def init_webdriver():
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+
+    # Add more user agent information
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+
+    # Disable image loading to improve speed
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
 
@@ -2006,8 +2010,13 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     from concurrent.futures import as_completed
 
     bookmarks_to_process = bookmarks
-    bookmarks_with_content = []
-    failed_records = []
+    all_bookmarks_with_content = []  # This will accumulate all results for bookmarks
+    all_failed_records = []  # This will accumulate all failed records
+    
+    # These lists will be used as temporary buffers for periodic flushing
+    bookmarks_batch = []
+    failed_records_batch = []
+    
     skipped_url_count = 0
     new_bookmarks_added = 0  # To track for the limit
 
@@ -2015,37 +2024,67 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     bookmarks_lock = threading.Lock()
     last_flush_time = time.time()
 
-    def flush_to_disk(current_bookmarks, current_failed, max_batch_size=50):
-        # ... (Implementation remains the same, but simplified for clarity here)
+    def flush_to_disk(current_bookmarks, current_failed):
+        """Flushes a batch of bookmarks and failed records to the LMDB database."""
+        if not current_bookmarks and not current_failed:
+            return
+
         try:
-            # Batch process bookmarks
-            for i in range(0, len(current_bookmarks), max_batch_size):
-                batch = current_bookmarks[i:i + max_batch_size]
+            # Batch process bookmarks to LMDB
+            if current_bookmarks:
                 with lmdb_env.begin(write=True) as txn:
-                    for bookmark in batch:
-                        # ... (database write logic)
-                        pass
-            # Batch process failed records
-            for i in range(0, len(current_failed), max_batch_size):
-                batch = current_failed[i:i + max_batch_size]
+                    cursor_b = txn.cursor(bookmarks_db)
+                    # Determine the next available key for new entries
+                    next_key_b = int.from_bytes(cursor_b.key(), 'big') + 1 if cursor_b.last() else 1
+                    # In this loop, we handle both new and existing bookmarks.
+                    # If a bookmark's URL is already in the database, we update the existing record.
+                    # Otherwise, we create a new one. This prevents data corruption and duplicates.
+                    for bookmark in current_bookmarks:
+                        url = bookmark.get('url')
+                        if not url: continue
+
+                        # Check if the bookmark URL already exists to decide whether to update or insert
+                        key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
+
+                        if key_bytes:
+                            # Update existing bookmark
+                            bookmark_key = key_bytes
+                        else:
+                            # Insert new bookmark
+                            bookmark_key = next_key_b.to_bytes(4, 'big')
+                            next_key_b += 1
+                        
+                        # Write to the database
+                        txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
+                        # Ensure the URL-to-key mapping is up-to-date
+                        txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                        # Update secondary indexes
+                        update_secondary_indexes(txn, bookmark_key, bookmark)
+
+            # Batch process failed records to LMDB
+            if current_failed:
                 with lmdb_env.begin(write=True) as txn:
-                    for failed_record in batch:
-                        # ... (database write logic)
-                        pass
+                    cursor_f = txn.cursor(failed_records_db)
+                    next_key_f = int.from_bytes(cursor_f.key(), 'big') + 1 if cursor_f.last() else 1
+                    for failed_record in current_failed:
+                        failed_key = next_key_f.to_bytes(4, 'big')
+                        txn.put(failed_key, safe_pickle(failed_record), db=failed_records_db)
+                        next_key_f += 1
+            
+            print(f"Successfully flushed {len(current_bookmarks)} bookmarks and {len(current_failed)} failed records to LMDB.")
         except Exception as e:
-            print(f"Error during periodic flush: {e}")
-            raise
+            logger.error(f"Error during periodic flush: {e}")
 
     def _crawl_bookmark(args):
         """Wrapper function to perform URL deduplication and crawl in a single thread task."""
         bookmark, idx, total_count, min_delay, max_delay = args
-
+        
         if shutdown_flag:
             return None, None
 
         url = bookmark['url']
         url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
-
+        
         try:
             with lmdb_env.begin(write=True) as txn:
                 if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
@@ -2059,6 +2098,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
         return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay)
 
+
     start_time = time.time()
     total_count = len(bookmarks_to_process)
     print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
@@ -2069,20 +2109,22 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         for future in tqdm(as_completed(futures), total=len(futures), desc="Crawl Progress"):
             if shutdown_flag or (limit and new_bookmarks_added >= limit):
                 print("Limit reached or shutdown signal received, cancelling remaining tasks...")
-                for f in futures:
-                    f.cancel()
+                for f in futures: f.cancel()
                 break
-
+            
+            bookmarks_to_flush = None
+            failed_to_flush = None
             try:
                 result, failed_info = future.result()
 
                 if result == "skipped":
                     skipped_url_count += 1
                     continue
-
+                
                 with bookmarks_lock:
                     if result:
-                        bookmarks_with_content.append(result)
+                        all_bookmarks_with_content.append(result)
+                        bookmarks_batch.append(result)
                         new_bookmarks_added += 1
                     if failed_info:
                         if not skip_unreachable:
@@ -2090,26 +2132,45 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
                             error_bookmark = original_bookmark.copy()
                             error_bookmark["error"] = failed_info["reason"]
                             error_bookmark["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                            bookmarks_with_content.append(error_bookmark)
+                            all_bookmarks_with_content.append(error_bookmark)
+                            bookmarks_batch.append(error_bookmark)
                             new_bookmarks_added += 1
-                        failed_records.append(failed_info)
+                        all_failed_records.append(failed_info)
+                        failed_records_batch.append(failed_info)
+                    
+                    if time.time() - last_flush_time >= flush_interval:
+                        print(f"Flush interval of {flush_interval} seconds reached. Flushing data to disk...")
+                        bookmarks_to_flush = list(bookmarks_batch)
+                        failed_to_flush = list(failed_records_batch)
+                        bookmarks_batch.clear()
+                        failed_records_batch.clear()
+                        last_flush_time = time.time()
+
             except Exception as e:
                 logger.error(f"An error occurred while processing a future: {e}")
+            else:
+                if bookmarks_to_flush is not None:
+                    flush_to_disk(bookmarks_to_flush, failed_to_flush)
 
     end_time = time.time()
     print(f"End time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     elapsed_time = end_time - start_time
     print(f"Total time for parallel bookmark crawl: {elapsed_time:.2f} seconds")
-
-    # Final flush to save any remaining data
+    
+    # Final flush for any remaining items in the batch
+    final_bookmarks_to_flush = None
     with bookmarks_lock:
-        if bookmarks_with_content or failed_records:
+        if bookmarks_batch or failed_records_batch:
             print("Performing final flush to LMDB...")
-            flush_to_disk(bookmarks_with_content, failed_records)
-            bookmarks_with_content.clear()
-            failed_records.clear()
+            final_bookmarks_to_flush = list(bookmarks_batch)
+            final_failed_to_flush = list(failed_records_batch)
+            bookmarks_batch.clear()
+            failed_records_batch.clear()
 
-    return bookmarks_with_content, failed_records, new_bookmarks_added
+    if final_bookmarks_to_flush:
+        flush_to_disk(final_bookmarks_to_flush, final_failed_to_flush)
+    
+    return all_bookmarks_with_content, all_failed_records, new_bookmarks_added
 
 # Parse command-line arguments
 def parse_args():

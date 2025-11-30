@@ -10,7 +10,8 @@ readme = {file = "README.MD", content-type = "text/markdown"}
 license = {text = "Apache-2.0"}
 requires-python = ">=3.6"
 authors = [
-    {name = "wyj"}
+    {name = "wyj"},
+    {name = "Stephen Karl Larroque", email = "lrq3000@gmail.com"},
 ]
 maintainers = [
     {name = "Stephen Karl Larroque", email = "lrq3000@gmail.com"},

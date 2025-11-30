@@ -21,7 +21,7 @@ api_base = "http://localhost:11434"
 # Name of the specific model to use for generation.
 # Type: string
 # Default: gemma3:1b
-model_name = "gemma3:1b"
+model_name = "qwen3:1.7b"
 
 # Maximum number of tokens to generate in responses.
 # Type: integer

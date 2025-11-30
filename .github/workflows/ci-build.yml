@@ -62,11 +62,12 @@ jobs:
     - name: Twine check
       if: ${{ matrix.python-version == '*' }}
       run: |
+        pip install --upgrade twine
         twine check "dist/*"
     - name: pyproject.toml validity
       if: ${{ matrix.python-version == '*' }}
       run: validate-pyproject pyproject.toml -v
     - name: Check for potential security issues
       run: |
-        pip install bandit
+        pip install --upgrade bandit
         bandit -r . -x ./tests

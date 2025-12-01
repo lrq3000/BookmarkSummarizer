@@ -768,13 +768,6 @@ def load_custom_parsers(parser_filter=None):
             
             module_path = os.path.join(parsers_dir, filename)
 
-            # Skip if parser_filter is specified and this parser is not in the list
-            if parser_filter is not None and module_name not in parser_filter:
-                print(f"Skipping custom parser (not in filter): {module_name}")
-                continue
-
-            module_path = os.path.join(parsers_dir, filename)
-
             try:
                 # Load the module dynamically
                 spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -795,6 +788,13 @@ def load_custom_parsers(parser_filter=None):
 
     # Sort parsers alphabetically by filename to ensure systematic execution order
     parsers.sort(key=lambda x: x[0])
+
+    # Check for missing parsers in filter
+    if parser_filter:
+        found_parser_names = {filename[:-3] for filename, _ in parsers}
+        for name in parser_filter:
+            if name not in found_parser_names:
+                print(f"Warning: Custom parser '{name}' specified in filter but not found.")
 
     print(f"Loaded {len(parsers)} custom parsers")
     return [parser for filename, parser in parsers]
@@ -959,7 +959,7 @@ def call_ollama_api(prompt, config=None):
         config = ModelConfig()
     
     # Determine whether to use the chat or generate interface
-    use_chat_api = True
+    use_chat_api = getattr(config, 'use_chat_api', True)
     
     # API endpoint
     if use_chat_api:

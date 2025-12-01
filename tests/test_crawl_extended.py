@@ -178,8 +178,12 @@ class TestCrawlExtended(unittest.TestCase):
         self.assertIsNotNone(crawl.bookmarks_db)
 
         # Cleanup
-        crawl.cleanup_lmdb()
         # Note: cleanup_lmdb just closes the env, it keeps the global variable pointing to the closed env object.
+        crawl.cleanup_lmdb()
+        # So we cannot check if it is None, but we can check if it is closed by trying to use it or check if accessing it raises error?
+        # Actually standard lmdb object doesn't have is_open method easily accessible?
+        # But for the purpose of the test, we verified it was not None after init.
+        # We can try to reopen it to ensure it was properly cleaned up or just assume it works.
 
         # Re-init to make sure it works again
         crawl.init_lmdb(map_size=1024*1024)

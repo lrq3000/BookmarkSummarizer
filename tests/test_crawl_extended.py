@@ -153,12 +153,23 @@ class TestCrawlExtended(unittest.TestCase):
                     f.fileno.return_value = 1 # Return a valid integer fd
 
                     with patch('builtins.open', m):
-                        # Also need to mock fcntl if on unix
-                        with patch('fcntl.flock'):
-                             success, path = crawl.create_lmdb_backup()
-                             self.assertTrue(success)
-                             self.assertIsNotNone(path)
-                             self.assertTrue(mock_copy2.called)
+                        # Conditional patching for Windows compatibility
+                        if sys.platform == 'win32':
+                            # On Windows, mock msvcrt.locking
+                            # Since msvcrt might not be importable on linux (where tests run), this block is skipped here.
+                            # But on Windows it will run.
+                            with patch('msvcrt.locking', create=True) as mock_lock:
+                                success, path = crawl.create_lmdb_backup()
+                                self.assertTrue(success)
+                                self.assertIsNotNone(path)
+                                self.assertTrue(mock_copy2.called)
+                        else:
+                            # On Unix, mock fcntl.flock
+                            with patch('fcntl.flock'):
+                                success, path = crawl.create_lmdb_backup()
+                                self.assertTrue(success)
+                                self.assertIsNotNone(path)
+                                self.assertTrue(mock_copy2.called)
 
     def test_init_lmdb(self):
         # Test initialization

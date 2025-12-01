@@ -5,6 +5,10 @@ import sys
 import os
 import shutil
 import tempfile
+
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import build_app
 
 class TestBuildApp(unittest.TestCase):
@@ -33,6 +37,39 @@ class TestBuildApp(unittest.TestCase):
         # Let's trust the logic: tries import, if fails, calls subprocess.
         # We can simulate failure by modifying sys.modules? No.
         # Let's move on to build_executable which is more complex.
+        # We need to simulate ImportError when importing PyInstaller.
+        # Since we can't easily modify the import mechanism for a specific module without affecting others or using builtins patch,
+        # and builtins patch is risky/complex to scope correctly for just one import statement inside a function.
+        # However, we can mock sys.executable and subprocess.check_call to verify the installation command is called if import fails.
+        # But how to trigger import failure?
+        # If we remove 'PyInstaller' from sys.modules, Python will try to find it.
+        # If it finds it in site-packages, it imports it.
+        # We want it to NOT find it.
+
+        # We can use side_effect on __import__ but it's global.
+        # Alternatively, we can assume the environment has PyInstaller (as evidenced by Case 1 working with mock)
+        # and skip this test case or accept it's hard to test import failure without a virtualenv sandbox manipulation.
+
+        # But wait, if we are in a test, we can use `unittest.mock.patch('builtins.__import__')` with a side effect
+        # that raises ImportError only for 'PyInstaller'.
+
+        original_import = __import__
+        def side_effect(name, *args, **kwargs):
+            if name == 'PyInstaller':
+                raise ImportError("No module named PyInstaller")
+            return original_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=side_effect):
+            # We also need to make sure it's not in sys.modules
+            with patch.dict(sys.modules):
+                if 'PyInstaller' in sys.modules:
+                    del sys.modules['PyInstaller']
+
+                # Now run the function
+                build_app.install_pyinstaller()
+
+                # Verify check_call was called with pip install
+                mock_check_call.assert_called_with([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
     @patch('build_app.subprocess.check_call')
     @patch('build_app.shutil.copy2')

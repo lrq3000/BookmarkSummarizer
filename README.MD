@@ -143,9 +143,9 @@ Generates summaries for existing `bookmarks_with_content.json` without re-crawli
 
 Once your bookmarks are crawled, a `bookmarks_with_content.json` file will be present in the current folder. Then you can search through it with a fuzzy search engine:
 
-**Launch the search interface with index updates**:
+**Launch the search interface without rebuilding the index**:
 ```bash
-python fuzzy_bookmark_search.py --update-index
+python fuzzy_bookmark_search.py --no-index
 ```
 This launches a local web server with the search engine accessible through http://localhost:8132/ (the port can be changed via `--port xxx`). The search engine uses Whoosh to build a fast, on-disk, fuzzy searchable index.
 

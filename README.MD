@@ -42,6 +42,14 @@ BookmarkSummarizer is a powerful tool that crawls your browsers' bookmarks, gene
 
 Head to the [GitHub Releases](https://github.com/lrq3000/BookmarkSummarizer/releases) and pick the latest release, you will find precompiled binaries for Windows, MacOS and Linux.
 
+#### From PyPi
+
+If you already have a Python install, you can install this app simply by:
+
+```
+pip install --upgrade bookmark-summarizer
+```
+
 #### From source
 
 1. Clone the repository:
@@ -236,11 +244,11 @@ Here is a non-exhaustive list of complementary **opensource** 3rd-party extensio
 * LinkWarden or ArchiveBox: alternatives to BookmarkSummarizer to index/archive the full-text content pointed at by the bookmarks.
 
 
-[1]: https://img.shields.io/pypi/v/BookmarkSummarizer.svg
-[2]: https://pypi.org/project/BookmarkSummarizer
-[3]: https://img.shields.io/pypi/pyversions/BookmarkSummarizer.svg?logo=python&logoColor=white
-[4]: https://img.shields.io/pypi/l/BookmarkSummarizer.svg
-[5]: https://img.shields.io/pypi/dm/BookmarkSummarizer.svg?label=pypi%20downloads&logo=python&logoColor=white
+[1]: https://img.shields.io/pypi/v/bookmark-summarizer.svg
+[2]: https://pypi.org/project/bookmark-summarizer
+[3]: https://img.shields.io/pypi/pyversions/bookmark-summarizer.svg?logo=python&logoColor=white
+[4]: https://img.shields.io/pypi/l/bookmark-summarizer.svg
+[5]: https://img.shields.io/pypi/dm/bookmark-summarizer.svg?label=pypi%20downloads&logo=python&logoColor=white
 [7]: https://github.com/lrq3000/BookmarkSummarizer/actions/workflows/ci-build.yml/badge.svg?event=push
 [8]: https://github.com/lrq3000/BookmarkSummarizer/actions/workflows/ci-build.yml
 [9]: https://codecov.io/gh/lrq3000/BookmarkSummarizer/graph/badge.svg?token=NuNgXwZqAO

@@ -345,11 +345,11 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         crawl.lmdb_env = MagicMock()
         with patch('crawl.check_lmdb_database_exists_and_has_data', return_value=(True, True, 10)), \
              patch('builtins.open', mock_open()), \
-             patch('fcntl.flock'), \
              patch('os.makedirs'), \
              patch('glob.glob', return_value=[]), \
              patch('shutil.copy2'), \
              patch('crawl.HAS_FCNTL', True), \
+             patch('crawl.fcntl', create=True) as mock_fcntl, \
              patch('crawl.init_lmdb', side_effect=Exception("Reopen Fail")):
                  success, path = crawl.create_lmdb_backup("test")
                  self.assertTrue(success)

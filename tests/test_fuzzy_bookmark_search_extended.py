@@ -66,12 +66,25 @@ class TestFuzzyBookmarkSearch(unittest.TestCase):
                 txn.put(date, pickle.dumps(keys), db=self.date_index_db)
 
         self.env.close()
+        del self.env
 
         self.searcher = FuzzyBookmarkSearch(self.lmdb_path)
 
     def tearDown(self):
         self.searcher.cleanup_lmdb()
-        shutil.rmtree(self.test_dir)
+
+        # Retry mechanism for Windows file locking issues
+        import time
+        for i in range(5):
+            try:
+                shutil.rmtree(self.test_dir)
+                break
+            except OSError:
+                if i == 4:
+                    # Last attempt, raise the error
+                    raise
+                # Wait a bit before retrying
+                time.sleep(0.5)
 
     def test_lmdb_open(self):
         self.searcher.lmdb_open()

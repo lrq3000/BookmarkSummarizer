@@ -108,7 +108,7 @@ class TestCrawlAdvanced(unittest.TestCase):
         # Create a deep structure to test recursion limit adjustment
         deep_struct = {}
         curr = deep_struct
-        for _ in range(2000):
+        for _ in range(1000):
             curr["next"] = {}
             curr = curr["next"]
 

@@ -114,7 +114,7 @@ def safe_pickle(obj):
     """
     import sys
     old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(10000)
+    sys.setrecursionlimit(20000)
     try:
         sanitized = sanitize_bookmark(obj)
         return pickle.dumps(sanitized)

@@ -5,6 +5,7 @@ import sys
 import os
 import shutil
 import tempfile
+import subprocess
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -20,39 +21,8 @@ class TestBuildApp(unittest.TestCase):
             build_app.install_pyinstaller()
             mock_check_call.assert_not_called()
 
-        # Case 2: PyInstaller not imported (simulated by KeyError)
-        with patch.dict(sys.modules):
-            if 'PyInstaller' in sys.modules:
-                del sys.modules['PyInstaller']
-            # We need to simulate ImportError when importing PyInstaller
-            # Since we can't easily uninstall it, we rely on the fact that if we removed it from sys.modules
-            # but it is installed, it will be re-imported.
-            # To properly test the install logic, we need to mock import to raise ImportError.
-
-            with patch('builtins.__import__', side_effect=ImportError("PyInstaller")):
-                # But builtins.__import__ is used by everything. This might be too aggressive.
-                # Let's just mock the print statement or check_call calls
-                pass
-
-        # Let's trust the logic: tries import, if fails, calls subprocess.
-        # We can simulate failure by modifying sys.modules? No.
-        # Let's move on to build_executable which is more complex.
-        # We need to simulate ImportError when importing PyInstaller.
-        # Since we can't easily modify the import mechanism for a specific module without affecting others or using builtins patch,
-        # and builtins patch is risky/complex to scope correctly for just one import statement inside a function.
-        # However, we can mock sys.executable and subprocess.check_call to verify the installation command is called if import fails.
-        # But how to trigger import failure?
-        # If we remove 'PyInstaller' from sys.modules, Python will try to find it.
-        # If it finds it in site-packages, it imports it.
-        # We want it to NOT find it.
-
-        # We can use side_effect on __import__ but it's global.
-        # Alternatively, we can assume the environment has PyInstaller (as evidenced by Case 1 working with mock)
-        # and skip this test case or accept it's hard to test import failure without a virtualenv sandbox manipulation.
-
-        # But wait, if we are in a test, we can use `unittest.mock.patch('builtins.__import__')` with a side effect
-        # that raises ImportError only for 'PyInstaller'.
-
+        # Case 2: PyInstaller not imported (simulated by Import Error)
+        # To simulate import error properly we use a side_effect on __import__
         original_import = __import__
         def side_effect(name, *args, **kwargs):
             if name == 'PyInstaller':
@@ -65,10 +35,7 @@ class TestBuildApp(unittest.TestCase):
                 if 'PyInstaller' in sys.modules:
                     del sys.modules['PyInstaller']
 
-                # Now run the function
                 build_app.install_pyinstaller()
-
-                # Verify check_call was called with pip install
                 mock_check_call.assert_called_with([sys.executable, "-m", "pip", "install", "pyinstaller"])
 
     @patch('build_app.subprocess.check_call')
@@ -86,8 +53,30 @@ class TestBuildApp(unittest.TestCase):
         self.assertTrue(mock_copy2.called) # copy config
 
     @patch('build_app.subprocess.check_call')
+    @patch('build_app.shutil.copy2')
+    @patch('os.path.exists')
+    def test_build_executable_add_data_missing(self, mock_exists, mock_copy2, mock_check_call):
+        # Simulate add-data source missing
+        # The script checks `if os.path.exists(src):` for add_data items.
+        # We need to make it return False for custom_parsers but True for other things if needed?
+        # Actually it only checks for items in `add_data` list.
+        # We can just return False.
+        mock_exists.return_value = False
+
+        with patch('sys.stdout', new=MagicMock()):
+            build_app.build_executable()
+
+        # Should still run build commands, just without add-data args
+        self.assertEqual(mock_check_call.call_count, 3)
+        # Check that --add-data was NOT in the args for crawl (which has add_data)
+        # crawl is the second call
+        args, _ = mock_check_call.call_args_list[1]
+        cmd_list = args[0]
+        self.assertNotIn("--add-data", cmd_list)
+
+    @patch('build_app.subprocess.check_call')
     def test_build_executable_failure(self, mock_check_call):
-        mock_check_call.side_effect = build_app.subprocess.CalledProcessError(1, "cmd")
+        mock_check_call.side_effect = subprocess.CalledProcessError(1, "cmd")
 
         with self.assertRaises(SystemExit):
             build_app.build_executable()

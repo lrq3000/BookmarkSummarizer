@@ -5,9 +5,8 @@ import sys
 import os
 import shutil
 import tempfile
-import pickle
-import json
 import lmdb
+import pickle
 from fastapi.testclient import TestClient
 
 # Add project root to path
@@ -170,6 +169,15 @@ class TestFuzzyBookmarkSearch(unittest.TestCase):
         # In setup we have 1 Python bookmark.
         self.assertEqual(result['pagination']['total_results'], 1)
 
+    def test_safe_lmdb_operation_fallback(self):
+        # Trigger an error to test fallback
+        def op(txn):
+            raise lmdb.Error("Fail")
+
+        fallback = lambda: "Fallback"
+        result = self.searcher.safe_lmdb_operation(op, fallback)
+        self.assertEqual(result, "Fallback")
+        self.assertTrue(self.searcher.use_fallback)
 
 if __name__ == '__main__':
     unittest.main()

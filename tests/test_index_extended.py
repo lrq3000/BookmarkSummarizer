@@ -25,9 +25,6 @@ class TestIndex(unittest.TestCase):
         shutil.rmtree(self.test_dir)
 
     def test_get_bookmarks_structure(self):
-        # Let's test get_bookmarks by mocking the browser instantiation loop
-        # Since get_bookmarks dynamically finds classes, we can inject a mock class into browsers_module
-
         # Create a mock browser class
         class MockBrowser:
             def fetch_bookmarks(self, sort=False):
@@ -36,47 +33,36 @@ class TestIndex(unittest.TestCase):
                     (None, "https://nodate.com", None, None)
                 ])
 
-        # We need to temporarily add this to index.browsers_module or patch inspect/dir
-        # Easier: patch the list comprehension or the loop.
-        # The list comprehension is:
-        # browser_classes = [ ... ]
-
-        # Since it is inside the function, we can't easily patch the local variable.
-        # But we can patch inspect.isclass and dir(browsers_module).
+        # Patch the module's contents directly instead of patching builtins.dir
+        # We can mock `inspect.isclass` and `issubclass` to control which attributes are treated as valid browsers.
+        # We also need `getattr` to return our mock class.
 
         with patch('index.browsers_module') as mock_module:
-            with patch('index.inspect.isclass', return_value=True):
+            # Setup the mock module to behave like an object with attributes
+            # IMPORTANT: For MagicMock, dir() will include attributes we set on it.
+            # So we don't need to patch builtins.dir or __dir__.
+
+            mock_module.MockBrowser = MockBrowser
+
+            # We need to make sure MockBrowser is treated as a class and subclass of Browser
+
+            # Since index.py iterates over dir(browsers_module), and we confirmed `MockBrowser` will be in it,
+            # we just need inspect.isclass and issubclass to return True for it.
+
+            # However, dir(mock) also contains other standard mock methods/attributes (assert_called, etc).
+            # We need to ensure inspect.isclass returns False for those, or handle them.
+            # It's easier to mock inspect.isclass to return True ONLY for our MockBrowser.
+
+            def side_effect_isclass(obj):
+                return obj is MockBrowser
+
+            with patch('index.inspect.isclass', side_effect=side_effect_isclass):
                 with patch('index.issubclass', return_value=True):
-                    # Mock module attributes
-                    mock_module.MockBrowser = MockBrowser
-                    mock_module.Browser = object # Different class
-                    mock_module.ChromiumBasedBrowser = object # Different class
 
-                    # Mock dir to return our mock browser name
-                    # We need to patch the dir() call in index.py
-                    # index.py imports browsers_module.
-
-                    # We can patch 'dir' to return only our MockBrowser
-                    with patch('builtins.dir', return_value=['MockTestBrowser']):
-                         # Mock attributes on the module dynamically
-                         mock_module.MockTestBrowser = MockBrowser
-
-                         # Also need to make sure issubclass returns true for this against Browser
-                         # Real MockBrowser doesn't inherit from real Browser.
-                         # So we might need to rely on duck typing or actually inherit.
-
-                         bookmarks = index.get_bookmarks()
-                         # We expect 2 bookmarks from MockBrowser, and maybe more if fetch_bookmarks called multiple times?
-                         # The loop runs for each class in dir(). dir() returns ['MockTestBrowser'].
-                         # So it runs once.
-                         self.assertEqual(len(bookmarks), 2)
-                         # Sorting happens: (2023-01-01, example) vs (None, nodate).
-                         # Key is (x[3] or "", x[2] or ""). Folder and Title.
-                         # Folder: "Folder" vs None -> "Folder" vs ""
-                         # "Folder" > ""
-                         # So Example comes first.
-                         self.assertEqual(bookmarks[0]['url'], 'https://example.com')
-                         self.assertEqual(bookmarks[1]['name'], '') # None converted to ""
+                    bookmarks = index.get_bookmarks()
+                    self.assertEqual(len(bookmarks), 2)
+                    self.assertEqual(bookmarks[0]['url'], 'https://example.com')
+                    self.assertEqual(bookmarks[1]['name'], '')
 
     def test_main(self):
          # Test main execution

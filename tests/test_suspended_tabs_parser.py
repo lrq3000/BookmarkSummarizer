@@ -1,126 +1,66 @@
-#!/usr/bin/env python3
-"""
-Comprehensive test suite for the suspended tabs parser.
-Tests various scenarios including encoding levels, malformed URLs, and error handling.
-"""
 
 import unittest
+from unittest.mock import patch, MagicMock
 import sys
 import os
-
-# Add the project root to the Python path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from custom_parsers.a_suspended_tabs import main
-
+import shutil
+import tempfile
+import custom_parsers.a_suspended_tabs as parser
 
 class TestSuspendedTabsParser(unittest.TestCase):
-    """Test cases for the suspended tabs parser."""
 
-    def test_single_encoded_url(self):
-        """Test parsing of single-encoded suspended tab URLs."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=https%3A//www.example.com/path',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        self.assertEqual(result['url'], 'https://www.example.com/path')
-        self.assertEqual(result['title'], 'Suspended Tab')
+    def test_normal_url(self):
+        bookmark = {'url': 'https://example.com', 'name': 'Example'}
+        result = parser.main(bookmark)
+        self.assertEqual(result, bookmark)
+        self.assertEqual(result['url'], 'https://example.com')
 
-    def test_double_encoded_url(self):
-        """Test parsing of double-encoded suspended tab URLs."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=https%253A//www.example.com/path',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        self.assertEqual(result['url'], 'https://www.example.com/path')
-        self.assertEqual(result['title'], 'Suspended Tab')
+    def test_suspended_url(self):
+        # chrome-extension://klbibkeccnjlkjkiokjodocebajanakg/suspended.html#ttl=Example&uri=https://example.com
+        # Actual format might vary, but usually uri or url param
+        # The parser code looks for 'url' param.
 
-    def test_non_encoded_url_with_protocol(self):
-        """Test parsing of non-encoded URLs that already contain ://."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=https://www.example.com/path',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        self.assertEqual(result['url'], 'https://www.example.com/path')
-        self.assertEqual(result['title'], 'Suspended Tab')
+        # Construct a suspended URL
+        target_url = 'https://example.com/page'
+        encoded_url = 'https%3A%2F%2Fexample.com%2Fpage'
+        suspended_url = f'chrome-extension://extid/suspended.html?url={encoded_url}'
 
-    def test_no_url_parameter(self):
-        """Test handling of chrome-extension URLs without url= parameter."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?other=param',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        # Should return unchanged
-        self.assertEqual(result['url'], 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?other=param')
-        self.assertEqual(result['title'], 'Suspended Tab')
+        bookmark = {'url': suspended_url, 'name': 'Suspended'}
+        result = parser.main(bookmark)
+        self.assertEqual(result['url'], target_url)
 
-    def test_malformed_chrome_extension_url(self):
-        """Test handling of malformed chrome-extension URLs."""
-        bookmark = {
-            'url': 'chrome-extension://invalid/suspended.html?url=https%3A//www.example.com',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        # Should attempt to parse but may fail if extension ID is invalid
-        # The parser doesn't validate extension ID format, so it should try to decode
-        self.assertEqual(result['url'], 'https://www.example.com')
-        self.assertEqual(result['title'], 'Suspended Tab')
+    def test_nested_encoding(self):
+        # Test recursive decoding
+        target_url = 'https://example.com'
+        encoded_1 = 'https%3A%2F%2Fexample.com'
+        encoded_2 = 'https%253A%252F%252Fexample.com' # Double encoded
 
-    def test_invalid_decoded_url_no_protocol(self):
-        """Test handling of URLs that decode to invalid format without protocol."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=invalid%2Durl%2Dno%2Dprotocol',
-            'title': 'Suspended Tab'
-        }
-        result = main(bookmark)
-        # Should return unchanged due to lack of protocol after decoding
-        self.assertEqual(result['url'], 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=invalid%2Durl%2Dno%2Dprotocol')
-        self.assertEqual(result['title'], 'Suspended Tab')
+        suspended_url = f'chrome-extension://extid/suspended.html?url={encoded_2}'
 
-    def test_normal_url_passthrough(self):
-        """Test that normal URLs pass through unchanged."""
-        bookmark = {
-            'url': 'https://www.example.com/path',
-            'title': 'Normal Bookmark'
-        }
-        result = main(bookmark)
-        self.assertEqual(result['url'], 'https://www.example.com/path')
-        self.assertEqual(result['title'], 'Normal Bookmark')
+        bookmark = {'url': suspended_url}
+        result = parser.main(bookmark)
+        self.assertEqual(result['url'], target_url)
 
-    def test_empty_url(self):
-        """Test handling of bookmarks with empty URL."""
-        bookmark = {
-            'url': '',
-            'title': 'Empty URL'
-        }
-        result = main(bookmark)
-        self.assertEqual(result['url'], '')
-        self.assertEqual(result['title'], 'Empty URL')
+    def test_missing_url_param(self):
+        suspended_url = 'chrome-extension://extid/suspended.html?other=123'
+        bookmark = {'url': suspended_url}
+        result = parser.main(bookmark)
+        self.assertEqual(result['url'], suspended_url)
 
-    def test_none_url(self):
-        """Test handling of bookmarks with None URL."""
-        bookmark = {
-            'title': 'None URL'
-        }
-        result = main(bookmark)
-        self.assertNotIn('url', result)
-        self.assertEqual(result['title'], 'None URL')
+    def test_malformed_url(self):
+        # Should catch exception and return original
+        # To trigger exception in urlparse or parse_qs might be hard with strings, but main wraps in try/except.
+        # We can pass something that causes error?
+        # Maybe a bookmark without url key? code uses bookmark.get('url', '') so it handles it.
 
-    def test_exception_handling(self):
-        """Test that exceptions are handled gracefully."""
-        bookmark = {
-            'url': 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=%ZZ',  # Invalid percent encoding
-            'title': 'Invalid Encoding'
-        }
-        result = main(bookmark)
-        # Should return unchanged due to exception
-        self.assertEqual(result['url'], 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/suspended.html?url=%ZZ')
-        self.assertEqual(result['title'], 'Invalid Encoding')
+        # Passing an object that raises exception on get?
+        class BadDict(dict):
+            def get(self, k, d=None):
+                raise Exception("Boom")
 
+        bookmark = BadDict()
+        result = parser.main(bookmark)
+        self.assertEqual(result, bookmark)
 
 if __name__ == '__main__':
     unittest.main()

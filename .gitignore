@@ -181,5 +181,38 @@ failed_urls*.json
 failed_urls.txt
 .env
 
+# 配置文件（包含API密钥，必须忽略）
+*.toml
+!default_config.toml
+!pyproject.toml
+
+# 数据库和索引文件
+*.lmdb
+*.lmdb/
+bookmark_index.lmdb/
+whoosh_index/
+
+# 备份目录
+backups/
+backup/
+*.backup
+
+# 临时和调试文件
+check_index.py
+debug_*.py
+test_*.py
+!tests/test_*.py
+
+# 日志文件
+crawl_errors.log
+*.log
+
+# IDE和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
 # 不忽略的文件
 !requirements.txt

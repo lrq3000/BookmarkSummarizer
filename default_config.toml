@@ -1,0 +1,45 @@
+# Default configuration for Bookmark Summarizer
+# Variables names are in lowercase for TOML convention.
+
+[model]
+# The type of model provider to use for summarization and processing.
+# Type: string
+# Options: openai, deepseek, qwen, ollama
+# Default: ollama
+model_type = "ollama"
+
+# API key required for authentication with the model provider.
+# Type: string
+# Default: your_api_key_here
+api_key = "your_api_key_here"
+
+# Base URL for the API endpoint of the model provider.
+# Type: string
+# Default: http://localhost:11434 (for ollama)
+api_base = "http://localhost:11434"
+
+# Name of the specific model to use for generation.
+# Type: string
+# Default: gemma3:1b
+model_name = "qwen3:1.7b"
+
+# Maximum number of tokens to generate in responses.
+# Type: integer
+# Default: 1024
+max_tokens = 1024
+
+# Temperature setting for controlling randomness in model outputs (0.0 to 1.0).
+# Type: float
+# Default: 0.3
+temperature = 0.3
+
+[crawl]
+# Maximum allowed length of input content for processing.
+# Type: integer
+# Default: 6000
+max_input_content_length = 6000
+
+# Whether to generate summaries for bookmarks.
+# Type: boolean
+# Default: true
+generate_summary = true

@@ -1,4 +1,5 @@
 # Copyright 2024 wyj
+# Copyright 2025 Stephen Karl Larroque <lrq3000>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,49 +15,76 @@
 
 import json
 import os
+import sys
+import multiprocessing
+import inspect
+import browser_history.browsers as browsers_module
 
-# Chrome 书签文件路径
-bookmark_path = os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Bookmarks")
-# 保存到 JSON 文件路径
+# Path to save to JSON file
 output_path = os.path.expanduser("./bookmarks.json")
 
-def get_bookmarks(bookmark_path):
-    with open(bookmark_path, "r", encoding="utf-8") as file:
-        bookmarks_data = json.load(file)
+def get_bookmarks():
+    """
+    Fetch bookmarks from all installed browsers using browser_history module.
+    Returns a list of bookmark dictionaries compatible with the existing script format.
+    """
+    # Fetch bookmarks from all browsers -- normal method that should work but currently fails on Firefox because of issue https://github.com/browser-history/browser-history/issues/286
+    #outputs = browser_history.get_bookmarks()
+    #bookmarks_data = outputs.bookmarks
 
-    urls = []
+    # Fetch bookmarks from all browsers manually (bypasses sorting in browser-history and hence the Firefox bug)
+    # Dynamically retrieve list of all supported browser classes from browser_history module
+    browser_classes = [
+        getattr(browsers_module, name)
+        for name in dir(browsers_module)
+        if inspect.isclass(getattr(browsers_module, name)) and
+           issubclass(getattr(browsers_module, name), browsers_module.Browser) and
+           getattr(browsers_module, name) not in (browsers_module.Browser, browsers_module.ChromiumBasedBrowser)
+    ]
+    bookmarks_data = []
+    for browser_class in browser_classes:
+        try:
+            b = browser_class()
+            b.sort_bookmarks_descending = False  # Disable internal sorting to avoid None comparison errors
+            outputs = b.fetch_bookmarks(sort=False)  # Disable sorting to prevent TypeError with None values
+            bookmarks_data.extend(outputs.bookmarks)
+        except Exception as e:
+            print(f"Failed to fetch from {browser_class.__name__}: {e}")
+    # Sort the combined bookmarks with custom key to handle None values
+    bookmarks_data.sort(key=lambda x: (x[3] or "", x[2] or ""), reverse=True)
 
-    def extract_bookmarks(bookmark_node):
-        """递归提取所有书签的 URL"""
-        if "children" in bookmark_node:
-            for child in bookmark_node["children"]:
-                extract_bookmarks(child)
-        elif "url" in bookmark_node:
-            bookmark_info = {
-                "date_added": bookmark_node.get("date_added", "N/A"),
-                "date_last_used": bookmark_node.get("date_last_used", "N/A"),
-                "guid": bookmark_node.get("guid", "N/A"),
-                "id": bookmark_node.get("id", "N/A"),
-                "name": bookmark_node.get("name", "N/A"),
-                "type": bookmark_node.get("type", "url"),
-                "url": bookmark_node.get("url", ""),
-            }
-            urls.append(bookmark_info)
+    bookmarks = []
+    for dt, url, title, folder in bookmarks_data:
+        # Handle None values in title and folder to prevent sorting errors
+        title = title or ""
+        folder = folder or ""
+        # Map the tuple (datetime, url, title, folder) to the expected dictionary format
+        bookmark_info = {
+            "date_added": dt.timestamp() if dt else "N/A",  # Convert datetime to timestamp for compatibility
+            "date_last_used": "N/A",  # Not available from browser_history
+            "guid": "N/A",  # Not available from browser_history
+            "id": "N/A",  # Not available from browser_history
+            "name": title,  # Title of the bookmark
+            "type": "url",  # All entries are URLs
+            "url": url,  # URL of the bookmark
+            "folder": folder,  # Folder information for filtering
+        }
+        bookmarks.append(bookmark_info)
 
-    # 遍历 JSON 结构
-    for item in bookmarks_data["roots"].values():
-        extract_bookmarks(item)
+    return bookmarks
 
-    return urls
+def main():
+    # Parse bookmarks from all browsers
+    bookmarks = get_bookmarks()
 
-# 解析书签
-bookmarks = get_bookmarks(bookmark_path)
+    # Save to JSON file
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        # Remove data with empty URLs, non-URL types, and 'Extensions' folder
+        bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["folder"] != "Extensions"]
+        json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
 
-# 保存到 JSON 文件
-output_path = os.path.expanduser(output_path)
-with open(output_path, "w", encoding="utf-8") as output_file:
-    # 去掉 url 为空的数据，以及扩展程序的数据
-    bookmarks = [bookmark for bookmark in bookmarks if bookmark["url"] and bookmark["type"] == "url" and bookmark["name"] != "扩展程序"] 
-    json.dump(bookmarks, output_file, ensure_ascii=False, indent=4)
+    print(f"Extracted {len(bookmarks)} bookmarks in total, saved to {output_path}")
 
-print(f"共提取 {len(bookmarks)} 个书签，已保存到 {output_path}")
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()

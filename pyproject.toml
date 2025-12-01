@@ -1,0 +1,112 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bookmark-summarizer"
+version = "0.4.3.post5"
+description = "BookmarkSummarizer is a powerful tool that crawls your Chrome bookmarks, generates summaries using large language models, and turns them into a personal knowledge base. Easily search and utilize all your bookmarked web resources without manual organization."
+readme = {file = "README.MD", content-type = "text/markdown"}
+license = {text = "Apache-2.0"}
+requires-python = ">=3.6"
+authors = [
+    {name = "wyj"},
+    {name = "Stephen Karl Larroque", email = "lrq3000@gmail.com"},
+]
+maintainers = [
+    {name = "Stephen Karl Larroque", email = "lrq3000@gmail.com"},
+]
+keywords = ["bookmarks", "crawler", "summarizer", "llm", "ai", "knowledge-base", "chrome", "search", "fuzzy-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Utilities"
+]
+dependencies = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.2",
+    "chardet>=5.2.0",
+    "urllib3>=2.0.7",
+    "openai>=1.3.0",
+    "tqdm>=4.66.1",
+    "python-dotenv>=1.0.0",
+    "selenium>=4.14.0",
+    "webdriver-manager>=4.0.1",
+    "lxml>=4.9.3",
+    "Whoosh>=2.7.4",
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "browser-history",
+    "tomli; python_version < \"3.11\"",
+    "youtube-transcript-api>=0.6.2",
+    "lmdb>=1.4.1",
+]
+
+[project.optional-dependencies]
+# tests_require was deprecated in setup.py by setuptools, because anyway downstream the user wants to test in their own environment, not an isolated env, so the only practical replacement is to have test requirements defined as an extras/optional-dependency [test] so that they can be installed in the user's environment if they want to: https://discuss.python.org/t/providing-a-way-to-specify-how-to-run-tests-and-docs/15016
+test = [  # minimum dependencies to run tests
+    "pytest>=7.0",
+    "pytest-cov",
+    "coverage[toml]",
+    "py3make",  # necessary to run the config files in tests/results/*.cfg
+]
+
+[project.urls]
+Homepage = "https://github.com/wyj/BookmarkSummarizer"
+Repository = "https://github.com/wyj/BookmarkSummarizer"
+Issues = "https://github.com/wyj/BookmarkSummarizer/issues"
+
+[project.scripts]
+crawl = "crawl:main"
+fuzzy-search = "fuzzy_bookmark_search:main"
+
+[tool.setuptools]
+zip-safe = false
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bookmark_summarizer*"]
+
+[tool.setuptools.package-data]
+"*" = ["README*", "LICENSE"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --cov=. --cov-report=html --cov-report=term-missing --cov-report=xml"
+testpaths = [
+    "tests"
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "*/tests/*",
+    "*/test_*.py"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError"
+]
+
+[tool.cibuildwheel]
+build = "cp36-* cp37-* cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*"
+skip = ["*-win32", "*-manylinux_i686"]
+test-command = "pytest {package}/tests"

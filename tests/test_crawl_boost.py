@@ -220,7 +220,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         with patch('sys.argv', test_args), \
              patch('crawl.load_config', return_value={}), \
              patch('crawl.get_bookmarks', return_value=[{'url': 'http://example.com', 'name': 'Ex', 'type': 'url'}]), \
-             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)), \
+             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)), \
              patch('crawl.init_lmdb'), \
              patch('crawl.prepare_webdriver'), \
              patch('crawl.cleanup_lmdb'), \
@@ -237,7 +237,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         with patch('sys.argv', test_args), \
              patch('crawl.load_config', return_value={}), \
              patch('crawl.get_bookmarks', return_value=[]), \
-             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)), \
+             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)), \
              patch('crawl.init_lmdb'), \
              patch('crawl.prepare_webdriver'), \
              patch('crawl.cleanup_lmdb'), \
@@ -266,7 +266,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
               patch('crawl.prepare_webdriver'), \
               patch('crawl.cleanup_lmdb'), \
               patch('crawl.get_bookmarks', return_value=[]), \
-              patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)), \
+              patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)), \
               patch('crawl.load_config', return_value={}), \
               patch('json.dump'):
               crawl.main()
@@ -280,7 +280,8 @@ class TestCrawlCoverageBoost(unittest.TestCase):
             mock_txn.cursor.side_effect = Exception("Flush Error")
             mock_txn.get.return_value = None
             results = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, flush_interval=0)
-            self.assertEqual(len(results[0]), 1)
+            if len(results) == 4: results = results[0] # Handle unpacked return
+            self.assertEqual(len(results), 1)
 
     def test_parallel_fetch_worker_dedup_error(self):
         bookmarks = [{'url': 'u1', 'name': 't1', 'type': 'url'}]
@@ -288,14 +289,14 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         mock_txn = MagicMock()
         crawl.lmdb_env.begin.return_value.__enter__.return_value = mock_txn
         mock_txn.get.side_effect = Exception("Dedup Error")
-        results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+        results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]['reason'], "Deduplication check failed")
 
     def test_parallel_fetch_worker_shutdown(self):
         crawl.shutdown_flag = True
         bookmarks = [{'url': 'u1', 'name': 't1', 'type': 'url'}]
-        results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+        results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
         self.assertEqual(len(results), 0)
         self.assertEqual(len(failed), 0)
         crawl.shutdown_flag = False
@@ -307,7 +308,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         crawl.lmdb_env.begin.return_value.__enter__.return_value = mock_txn
         mock_txn.get.return_value = None
         with patch('crawl.fetch_webpage_content', side_effect=Exception("Future Error")):
-             results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+             results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
         self.assertEqual(len(results), 0)
 
     def test_parallel_fetch_limit_reached(self):
@@ -317,7 +318,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
          crawl.lmdb_env.begin.return_value.__enter__.return_value = mock_txn
          mock_txn.get.return_value = None
          with patch('crawl.fetch_webpage_content', return_value=({'url': 'u', 'content': 'c'}, None)):
-             results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, limit=2)
+             results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, limit=2)
          self.assertLessEqual(count, 3)
 
     def test_extract_domain_error(self):
@@ -454,7 +455,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
              patch('crawl.prepare_webdriver'), \
              patch('crawl.cleanup_lmdb'), \
              patch('crawl.get_bookmarks', return_value=[]), \
-             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)), \
+             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)), \
              patch('crawl.load_config', return_value={}), \
              patch('json.dump'):
              crawl.main()
@@ -474,7 +475,7 @@ class TestCrawlCoverageBoost(unittest.TestCase):
              patch('crawl.prepare_webdriver'), \
              patch('crawl.cleanup_lmdb'), \
              patch('crawl.get_bookmarks', return_value=[]), \
-             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)), \
+             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)), \
              patch('crawl.load_config', return_value={}), \
              patch('json.dump'):
              crawl.main()
@@ -525,10 +526,10 @@ class TestCrawlCoverageBoost(unittest.TestCase):
         crawl.lmdb_env.begin.return_value.__enter__.return_value = mock_txn
         mock_txn.get.return_value = None
         with patch('crawl.fetch_webpage_content', return_value=(None, {'reason': 'fail'})):
-             results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, skip_unreachable=True)
+             results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, skip_unreachable=True)
              self.assertEqual(len(results), 0)
              self.assertEqual(len(failed), 1)
-             results, failed, count = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, skip_unreachable=False)
+             results, failed, count, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1, skip_unreachable=False)
              self.assertEqual(len(results), 1)
              self.assertEqual(len(failed), 1)
 

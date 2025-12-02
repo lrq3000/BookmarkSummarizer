@@ -359,7 +359,7 @@ class TestCrawlCoverage(unittest.TestCase):
         mock_fetch.return_value = ({"url": "u", "content": "c"}, None)
         crawl.init_lmdb(map_size=1024*1024)
         try:
-            results, failed, added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=2, limit=2)
+            results, failed, added, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=2, limit=2)
             self.assertEqual(added, 2)
         finally:
             crawl.cleanup_lmdb()
@@ -446,10 +446,10 @@ class TestCrawlCoverage(unittest.TestCase):
             rebuild=True, flush_interval=60, lmdb_map_size=None, lmdb_max_dbs=None, lmdb_readonly=False,
             lmdb_resize_threshold=0.8, lmdb_growth_factor=2.0, enable_backup=False, disable_backup=True,
             backup_dir=".", backup_on_failure_stop=False, min_delay=0, max_delay=0, parsers=None,
-            skip_unreachable=False, from_json=False
+            skip_unreachable=False, from_json=False, watch=None
         )
         mock_get_bookmarks.return_value = []
-        mock_parallel.return_value = ([], [], 0)
+        mock_parallel.return_value = ([], [], 0, 0)
 
         # Manually set lmdb_env for this test since init_lmdb is mocked
         mock_env = MagicMock()

@@ -385,7 +385,7 @@ class TestCrawlAdvanced(unittest.TestCase):
         # Mock LMDB operations in main
         with patch('crawl.safe_lmdb_operation') as mock_safe_op, \
              patch('crawl.safe_backup_operation', return_value=True) as mock_bk_op, \
-             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0)) as mock_parallel:
+             patch('crawl.parallel_fetch_bookmarks', return_value=([], [], 0, 0)) as mock_parallel:
 
             # safe_lmdb_operation needs to return existing bookmarks for rebuild=False path
             # We must return a non-empty list for the first call (load existing bookmarks) to trigger backup

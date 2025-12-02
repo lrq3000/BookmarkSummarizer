@@ -1854,7 +1854,7 @@ def apply_custom_parsers(bookmark, parsers):
     return updated_bookmark
 
 # Crawl webpage content
-def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None):
+def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None, no_fetch=False):
     """Crawls webpage content"""
     # Get worker thread ID for logging
     worker_id = threading.get_ident()
@@ -1865,13 +1865,28 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
         print(f"[{worker_id}] Shutdown signal received, skipping bookmark processing: {bookmark.get('name', 'No Title')}")
         return None, None
 
+    url = bookmark["url"]
+    bookmark_title = bookmark.get("name", "No Title")  # Preserve original bookmark title
+    progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
+
+    # Handle no-fetch mode
+    if no_fetch:
+        print(f"[{worker_id}] {progress_info} Skipping fetch (no-fetch mode): {bookmark_title} - {url}")
+        bookmark_with_content = bookmark.copy()
+        bookmark_with_content["title"] = bookmark_title
+        bookmark_with_content["content"] = ""
+        bookmark_with_content["content_length"] = 0
+        bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        bookmark_with_content["crawl_method"] = "no-fetch"
+        return bookmark_with_content, None
+
     # Apply custom parsers before fetching content
     global custom_parsers
     bookmark = apply_custom_parsers(bookmark, custom_parsers)
 
+    # Re-read url and title as they might have been modified by custom parsers
     url = bookmark["url"]
-    bookmark_title = bookmark.get("name", "No Title")  # Preserve original bookmark title
-    progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
+    bookmark_title = bookmark.get("name", "No Title")
 
     # Initialize variables to prevent unassigned error
     content = None
@@ -2036,7 +2051,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False, min_delay=None, max_delay=None):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False, min_delay=None, max_delay=None, no_fetch=False):
     from concurrent.futures import as_completed
 
     bookmarks_to_process = bookmarks
@@ -2059,55 +2074,61 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         if not current_bookmarks and not current_failed:
             return
 
-        try:
+        def _flush_impl(txn):
             # Batch process bookmarks to LMDB
             if current_bookmarks:
-                with lmdb_env.begin(write=True) as txn:
-                    cursor_b = txn.cursor(bookmarks_db)
-                    # Determine the next available key for new entries
-                    next_key_b = int.from_bytes(cursor_b.key(), 'big') + 1 if cursor_b.last() else 1
-                    # In this loop, we handle both new and existing bookmarks.
-                    # If a bookmark's URL is already in the database, we update the existing record.
-                    # Otherwise, we create a new one. This prevents data corruption and duplicates.
-                    for bookmark in current_bookmarks:
-                        url = bookmark.get('url')
-                        if not url: continue
+                cursor_b = txn.cursor(bookmarks_db)
+                # Determine the next available key for new entries
+                next_key_b = int.from_bytes(cursor_b.key(), 'big') + 1 if cursor_b.last() else 1
+                # In this loop, we handle both new and existing bookmarks.
+                # If a bookmark's URL is already in the database, we update the existing record.
+                # Otherwise, we create a new one. This prevents data corruption and duplicates.
+                for bookmark in current_bookmarks:
+                    url = bookmark.get('url')
+                    if not url: continue
 
-                        # Check if the bookmark URL already exists to decide whether to update or insert
-                        key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
+                    # Check if the bookmark URL already exists to decide whether to update or insert
+                    key_bytes = txn.get(url.encode('utf-8'), db=url_to_key_db)
 
-                        if key_bytes:
-                            # Update existing bookmark
-                            bookmark_key = key_bytes
-                        else:
-                            # Insert new bookmark
-                            bookmark_key = next_key_b.to_bytes(4, 'big')
-                            next_key_b += 1
-                        
-                        # Write to the database
-                        txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
-                        # Ensure the URL-to-key mapping is up-to-date
-                        txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
-                        # Update secondary indexes
-                        update_secondary_indexes(txn, bookmark_key, bookmark)
+                    if key_bytes:
+                        # Update existing bookmark
+                        bookmark_key = key_bytes
+                    else:
+                        # Insert new bookmark
+                        bookmark_key = next_key_b.to_bytes(4, 'big')
+                        next_key_b += 1
+
+                    # Write to the database
+                    txn.put(bookmark_key, safe_pickle(bookmark), db=bookmarks_db)
+                    # Ensure the URL-to-key mapping is up-to-date
+                    txn.put(url.encode('utf-8'), bookmark_key, db=url_to_key_db)
+                    # Update secondary indexes
+                    update_secondary_indexes(txn, bookmark_key, bookmark)
 
             # Batch process failed records to LMDB
             if current_failed:
-                with lmdb_env.begin(write=True) as txn:
-                    cursor_f = txn.cursor(failed_records_db)
-                    next_key_f = int.from_bytes(cursor_f.key(), 'big') + 1 if cursor_f.last() else 1
-                    for failed_record in current_failed:
-                        failed_key = next_key_f.to_bytes(4, 'big')
-                        txn.put(failed_key, safe_pickle(failed_record), db=failed_records_db)
-                        next_key_f += 1
+                cursor_f = txn.cursor(failed_records_db)
+                next_key_f = int.from_bytes(cursor_f.key(), 'big') + 1 if cursor_f.last() else 1
+                for failed_record in current_failed:
+                    failed_key = next_key_f.to_bytes(4, 'big')
+                    txn.put(failed_key, safe_pickle(failed_record), db=failed_records_db)
+                    next_key_f += 1
             
             print(f"Successfully flushed {len(current_bookmarks)} bookmarks and {len(current_failed)} failed records to LMDB.")
-        except Exception as e:
-            logger.error(f"Error during periodic flush: {e}")
+
+        def _flush_fallback():
+            global fallback_bookmarks, fallback_failed_records
+            if current_bookmarks:
+                fallback_bookmarks.extend(current_bookmarks)
+            if current_failed:
+                fallback_failed_records.extend(current_failed)
+            print(f"Successfully flushed {len(current_bookmarks)} bookmarks and {len(current_failed)} failed records to fallback storage.")
+
+        safe_lmdb_operation(_flush_impl, _flush_fallback, "periodic flush", readonly=False)
 
     def _crawl_bookmark(args):
         """Wrapper function to perform URL deduplication and crawl in a single thread task."""
-        bookmark, idx, total_count, min_delay, max_delay = args
+        bookmark, idx, total_count, min_delay, max_delay, no_fetch = args
         
         if shutdown_flag:
             return None, None
@@ -2115,18 +2136,26 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
         url = bookmark['url']
         url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
         
-        try:
-            with lmdb_env.begin(write=True) as txn:
-                if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
-                    worker_id = threading.get_ident()
-                    print(f"[{worker_id}] Skipping duplicate URL [{idx+1}/{total_count}]: {bookmark.get('name', 'No Title')} - {url}")
-                    return "skipped", None
-                txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
-        except Exception as e:
-            logger.error(f"Error during URL deduplication check in worker: {e}")
-            return None, {"url": url, "title": bookmark.get("name", "No Title"), "reason": "Deduplication check failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        def _dedup_check(txn):
+            if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                return True
+            txn.put(url_hash.encode('utf-8'), b'1', db=url_hashes_db)
+            return False
 
-        return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay)
+        def _dedup_fallback():
+            if url_hash in fallback_url_hashes:
+                return True
+            fallback_url_hashes.add(url_hash)
+            return False
+
+        is_duplicate = safe_lmdb_operation(_dedup_check, _dedup_fallback, "URL deduplication check")
+
+        if is_duplicate:
+            worker_id = threading.get_ident()
+            print(f"[{worker_id}] Skipping duplicate URL [{idx+1}/{total_count}]: {bookmark.get('name', 'No Title')} - {url}")
+            return "skipped", None
+
+        return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay, no_fetch=no_fetch)
 
 
     start_time = time.time()
@@ -2134,7 +2163,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_crawl_bookmark, (bookmark, idx + 1, total_count, min_delay, max_delay)): bookmark for idx, bookmark in enumerate(bookmarks_to_process)}
+        futures = {executor.submit(_crawl_bookmark, (bookmark, idx + 1, total_count, min_delay, max_delay, no_fetch)): bookmark for idx, bookmark in enumerate(bookmarks_to_process)}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Crawl Progress"):
             if shutdown_flag or (limit and new_bookmarks_added >= limit):
@@ -2217,6 +2246,9 @@ def parse_args():
 
     # Flag to skip the summary generation step, useful for content fetching only.
     parser.add_argument('--no-summary', action='store_true', help='Skip the summary generation step')
+
+    # Flag to skip fetching full-text content, only record titles and URLs.
+    parser.add_argument('--no-fetch', action='store_true', help='Skip fetching full-text content, only record titles and URLs')
 
     # Flag to generate summaries from an existing content file, skipping the crawl.
     parser.add_argument('--from-json', action='store_true', help='Generate summaries from existing bookmarks_with_content.json')
@@ -2602,7 +2634,8 @@ def main():
         flush_interval=flush_interval,
         skip_unreachable=args.skip_unreachable,
         min_delay=min_delay,
-        max_delay=max_delay
+        max_delay=max_delay,
+        no_fetch=args.no_fetch
     )
     
     # Only execute the following code if summary generation is enabled

@@ -1,4 +1,3 @@
-
 import unittest
 import sys
 import os
@@ -86,13 +85,14 @@ class TestCrawlExpert(unittest.TestCase):
         args.skip_unreachable = False
         args.force_recompute_summaries = False
         args.from_json = False
+        args.watch = None
         mock_args.return_value = args
 
         # Setup parallel fetch return
         item1 = {"url": "u1", "content": "c1", "content_length": 100, "crawl_method": "selenium"}
         item2 = {"url": "u2", "content": "c2", "content_length": 200, "crawl_method": "requests"}
         failed1 = {"url": "u3", "reason": "timeout", "title": "Fail"}
-        mock_parallel.return_value = ([item1, item2], [failed1], 5)
+        mock_parallel.return_value = ([item1, item2], [failed1], 5, 0)
 
         # Setup API connection
         mock_test_api.return_value = True
@@ -249,7 +249,7 @@ class TestCrawlExpert(unittest.TestCase):
 
             with patch('crawl.fetch_webpage_content', side_effect=fetch_side_effect):
                 # Run with flush_interval=0 to force flushing every item
-                results, failed, count = crawl.parallel_fetch_bookmarks(
+                results, failed, count, _ = crawl.parallel_fetch_bookmarks(
                     bookmarks, max_workers=1, flush_interval=0
                 )
 

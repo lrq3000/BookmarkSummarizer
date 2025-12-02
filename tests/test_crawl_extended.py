@@ -357,5 +357,58 @@ class TestCrawlExtended(unittest.TestCase):
         self.assertEqual(config.max_tokens, 500)
         self.assertFalse(config.generate_summary)
 
+    @patch('crawl.process_crawl_cycle')
+    @patch('crawl.get_bookmarks', return_value=[])
+    @patch('crawl.init_lmdb')
+    @patch('crawl.prepare_webdriver')
+    @patch('crawl.cleanup_lmdb')
+    @patch('crawl.parse_args')
+    @patch('crawl.load_config', return_value={})
+    @patch('time.sleep')
+    def test_main_watch_mode(self, mock_sleep, mock_load, mock_args, mock_clean, mock_prep, mock_init, mock_get, mock_process):
+        # Setup args
+        args = MagicMock()
+        args.watch = 1
+        args.rebuild = False
+        args.limit = 0
+        args.workers = 1
+        args.no_summary = True
+        args.browser = None
+        args.profile_path = None
+        args.config = "config.toml"
+        args.flush_interval = 60
+        args.enable_backup = False
+        args.disable_backup = True
+        args.backup_dir = "."
+        args.backup_on_failure_stop = False
+        args.parsers = None
+        args.from_json = False
+        args.lmdb_map_size = 100
+        args.lmdb_max_dbs = 10
+        args.lmdb_readonly = False
+        args.lmdb_resize_threshold = 0.8
+        args.lmdb_growth_factor = 2.0
+        args.min_delay = 0.1
+        args.max_delay = 0.2
+        args.skip_unreachable = False
+        args.force_recompute_summaries = False
+
+        mock_args.return_value = args
+
+        # Side effect for sleep to break the loop
+        def sleep_side_effect(*args):
+            crawl.shutdown_flag = True
+
+        mock_sleep.side_effect = sleep_side_effect
+
+        # Run main
+        crawl.main()
+
+        # Verify process_crawl_cycle was called
+        mock_process.assert_called()
+
+        # Verify sleep was called (proving we entered the watch loop)
+        self.assertTrue(mock_sleep.called)
+
 if __name__ == '__main__':
     unittest.main()

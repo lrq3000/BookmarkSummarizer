@@ -267,7 +267,7 @@ class TestCrawlMissing(unittest.TestCase):
 
         # Set shutdown flag immediately
         crawl.shutdown_flag = True
-        results, failed, added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+        results, failed, added, _ = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
 
         # Should return what was processed (likely empty or close to it)
         # Since we cancel futures, result might vary, but it should return.
@@ -297,7 +297,7 @@ class TestCrawlMissing(unittest.TestCase):
         args.parsers = None
         mock_args.return_value = args
 
-        mock_parallel.return_value = ([], [], 0)
+        mock_parallel.return_value = ([], [], 0, 0)
 
         # Mock lmdb environment for rebuild (drop calls)
         mock_env = MagicMock()

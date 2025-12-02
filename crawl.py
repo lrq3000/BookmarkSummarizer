@@ -1854,7 +1854,7 @@ def apply_custom_parsers(bookmark, parsers):
     return updated_bookmark
 
 # Crawl webpage content
-def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None):
+def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_delay=None, max_delay=None, no_fetch=False):
     """Crawls webpage content"""
     # Get worker thread ID for logging
     worker_id = threading.get_ident()
@@ -1865,13 +1865,28 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
         print(f"[{worker_id}] Shutdown signal received, skipping bookmark processing: {bookmark.get('name', 'No Title')}")
         return None, None
 
+    url = bookmark["url"]
+    bookmark_title = bookmark.get("name", "No Title")  # Preserve original bookmark title
+    progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
+
+    # Handle no-fetch mode
+    if no_fetch:
+        print(f"[{worker_id}] {progress_info} Skipping fetch (no-fetch mode): {bookmark_title} - {url}")
+        bookmark_with_content = bookmark.copy()
+        bookmark_with_content["title"] = bookmark_title
+        bookmark_with_content["content"] = ""
+        bookmark_with_content["content_length"] = 0
+        bookmark_with_content["crawl_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        bookmark_with_content["crawl_method"] = "no-fetch"
+        return bookmark_with_content, None
+
     # Apply custom parsers before fetching content
     global custom_parsers
     bookmark = apply_custom_parsers(bookmark, custom_parsers)
 
+    # Re-read url and title as they might have been modified by custom parsers
     url = bookmark["url"]
-    bookmark_title = bookmark.get("name", "No Title")  # Preserve original bookmark title
-    progress_info = f"[{current_idx}/{total_count}]" if current_idx and total_count else ""
+    bookmark_title = bookmark.get("name", "No Title")
 
     # Initialize variables to prevent unassigned error
     content = None
@@ -2036,7 +2051,7 @@ def fetch_webpage_content(bookmark, current_idx=None, total_count=None, min_dela
     return bookmark_with_content, None
 
 # Parallel crawl bookmark content
-def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False, min_delay=None, max_delay=None):
+def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interval=60, skip_unreachable=False, min_delay=None, max_delay=None, no_fetch=False):
     from concurrent.futures import as_completed
 
     bookmarks_to_process = bookmarks
@@ -2107,7 +2122,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
 
     def _crawl_bookmark(args):
         """Wrapper function to perform URL deduplication and crawl in a single thread task."""
-        bookmark, idx, total_count, min_delay, max_delay = args
+        bookmark, idx, total_count, min_delay, max_delay, no_fetch = args
         
         if shutdown_flag:
             return None, None
@@ -2126,7 +2141,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
             logger.error(f"Error during URL deduplication check in worker: {e}")
             return None, {"url": url, "title": bookmark.get("name", "No Title"), "reason": "Deduplication check failed", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
 
-        return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay)
+        return fetch_webpage_content(bookmark, idx+1, total_count, min_delay, max_delay, no_fetch=no_fetch)
 
 
     start_time = time.time()
@@ -2134,7 +2149,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     print(f"Starting parallel crawl of bookmark content, max workers: {max_workers}, total: {total_count}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_crawl_bookmark, (bookmark, idx + 1, total_count, min_delay, max_delay)): bookmark for idx, bookmark in enumerate(bookmarks_to_process)}
+        futures = {executor.submit(_crawl_bookmark, (bookmark, idx + 1, total_count, min_delay, max_delay, no_fetch)): bookmark for idx, bookmark in enumerate(bookmarks_to_process)}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Crawl Progress"):
             if shutdown_flag or (limit and new_bookmarks_added >= limit):
@@ -2217,6 +2232,9 @@ def parse_args():
 
     # Flag to skip the summary generation step, useful for content fetching only.
     parser.add_argument('--no-summary', action='store_true', help='Skip the summary generation step')
+
+    # Flag to skip fetching full-text content, only record titles and URLs.
+    parser.add_argument('--no-fetch', action='store_true', help='Skip fetching full-text content, only record titles and URLs')
 
     # Flag to generate summaries from an existing content file, skipping the crawl.
     parser.add_argument('--from-json', action='store_true', help='Generate summaries from existing bookmarks_with_content.json')
@@ -2602,7 +2620,8 @@ def main():
         flush_interval=flush_interval,
         skip_unreachable=args.skip_unreachable,
         min_delay=min_delay,
-        max_delay=max_delay
+        max_delay=max_delay,
+        no_fetch=args.no_fetch
     )
     
     # Only execute the following code if summary generation is enabled

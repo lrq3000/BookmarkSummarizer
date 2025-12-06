@@ -2202,7 +2202,7 @@ def parallel_fetch_bookmarks(bookmarks, max_workers=20, limit=None, flush_interv
     if final_bookmarks_to_flush:
         flush_to_disk(final_bookmarks_to_flush, final_failed_to_flush)
     
-    return all_bookmarks_with_content, all_failed_records, new_bookmarks_added
+    return all_bookmarks_with_content, all_failed_records, new_bookmarks_added, skipped_url_count
 
 # Parse command-line arguments
 def parse_args():
@@ -2361,7 +2361,136 @@ def parse_args():
         help=parsers_help
     )
 
+    # Add --watch argument to run the crawler periodically
+    parser.add_argument(
+        '--watch',
+        '-w',
+        type=int,
+        help='Watch mode: run the crawler every N seconds to check for and add new bookmarks.'
+    )
+
     return parser.parse_args()
+
+# Execute a single crawl and summary generation cycle
+def process_crawl_cycle(args, config_data, bookmark_limit, max_workers, generate_summary_flag, flush_interval, min_delay, max_delay):
+    """
+    Executes a single crawl and summary generation cycle.
+
+    This function encapsulates the logic for fetching bookmarks, filtering them against
+    the LMDB database to find new ones, crawling their content, and generating summaries.
+    It is designed to be called either once (standard run) or repeatedly (watch mode).
+
+    Parameters:
+        args: Parsed command-line arguments.
+        config_data: Configuration dictionary loaded from TOML.
+        bookmark_limit: Maximum number of bookmarks to process per cycle.
+        max_workers: Number of concurrent workers.
+        generate_summary_flag: Whether to generate summaries.
+        flush_interval: Interval for flushing data to disk.
+        min_delay: Minimum delay between requests.
+        max_delay: Maximum delay between requests.
+    """
+    global use_fallback, lmdb_env, url_hashes_db, content_hashes_db, bookmarks_db, failed_records_db, url_to_key_db, domain_index_db, date_index_db, custom_parsers, fallback_url_hashes, fallback_content_hashes
+
+    print(f"\n--- Starting Crawl Cycle: {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+    print(f"Configuration:")
+    print(f"  - Browser: {args.browser if args.browser else 'All browsers'}")
+    print(f"  - Profile Path: {args.profile_path if args.profile_path else 'Default'}")
+    print(f"  - Bookmark Limit: {bookmark_limit if bookmark_limit > 0 else 'No Limit'}")
+    print(f"  - Parallel Workers: {max_workers}")
+    print(f"  - Generate Summary: {'Yes' if generate_summary_flag else 'No'}")
+
+    # Get bookmark data
+    try:
+        bookmarks = get_bookmarks(browser=args.browser, profile_path=args.profile_path)
+    except Exception as e:
+        logger.error(f"Error getting bookmarks: {e}")
+        return
+
+    # Filter bookmarks: remove empty URLs, 10.0. network URLs, and non-qualifying types
+    filtered_bookmarks = []
+    skipped_count = 0
+
+    for bookmark in bookmarks:
+        url = bookmark["url"]
+        # Check for empty URL, URL type, not "Extension" name, and not 10.0. network URL
+        if (url and
+            bookmark["type"] == "url" and
+            bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
+            not re.match(r"https?://10\.0\.", url)):
+            # If not rebuilding, skip URLs already in LMDB bookmarks
+            if not args.rebuild:
+                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+                try:
+                    with lmdb_env.begin() as txn:
+                        if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
+                            # Silently skip duplicates to reduce log noise in watch mode
+                            skipped_count += 1
+                            continue
+                except Exception as e:
+                    logger.error(f"Error checking URL deduplication: {e}")
+                    if use_fallback and url_hash in fallback_url_hashes:
+                        skipped_count += 1
+                        continue
+            filtered_bookmarks.append(bookmark)
+
+    print(f"Found {len(bookmarks)} total bookmarks, {skipped_count} skipped as duplicates/invalid, {len(filtered_bookmarks)} new to process.")
+
+    # Only proceed if there are bookmarks to process
+    if not filtered_bookmarks:
+        print("No new bookmarks to process in this cycle.")
+        return
+
+    # Save filtered bookmark data (Note: this overwrites the file each cycle with current cycle's new bookmarks)
+    try:
+        with open(bookmarks_path, "w", encoding="utf-8") as output_file:
+            json.dump(filtered_bookmarks, output_file, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving filtered bookmarks to JSON: {e}")
+
+    # Parallel crawl bookmark content
+    bookmarks_with_content, failed_records, new_bookmarks_added, skipped_during_crawl = parallel_fetch_bookmarks(
+        filtered_bookmarks,
+        max_workers=max_workers,
+        limit=bookmark_limit if bookmark_limit > 0 else None,
+        flush_interval=flush_interval,
+        skip_unreachable=args.skip_unreachable,
+        min_delay=min_delay,
+        max_delay=max_delay
+    )
+
+    # Only execute the following code if summary generation is enabled
+    if generate_summary_flag and bookmarks_with_content:
+        # Configure model
+        model_config = ModelConfig(config_data)
+
+        # Test API connection
+        if not test_api_connection(model_config):
+            print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
+            print("Skipping summary generation step...")
+        else:
+            # Generate summaries for the crawled content, respecting the force recompute flag
+            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
+    elif not generate_summary_flag:
+        print("Skipping summary generation step based on configuration...")
+
+    # Display cycle statistics
+    print(f"Cycle completed: {len(bookmarks_with_content)} bookmarks processed and saved.")
+    if failed_records:
+        print(f"Failed to crawl {len(failed_records)} URLs.")
+
+        # Update failed records file
+        try:
+            failed_records_list = safe_lmdb_operation(
+                lambda txn: [pickle.loads(record_bytes) for key_bytes, record_bytes in txn.cursor(failed_records_db)],
+                lambda: fallback_failed_records.copy(),
+                "retrieving failed records list"
+            )
+            if failed_records_list:
+                with open(failed_urls_path, "w", encoding="utf-8") as f:
+                    json.dump(failed_records_list, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Error updating failed URLs file: {e}")
 
 # Main function to orchestrate the bookmark crawling and summarization process.
 def main():
@@ -2545,150 +2674,84 @@ def main():
             print(f"Error processing LMDB data: {str(e)}")
             return
 
-    # Original crawling logic
-    print(f"Configuration:")
-    print(f"  - Browser: {args.browser if args.browser else 'All browsers'}")
-    print(f"  - Profile Path: {args.profile_path if args.profile_path else 'Default'}")
-    print(f"  - Bookmark Limit: {bookmark_limit if bookmark_limit > 0 else 'No Limit'}")
-    print(f"  - Parallel Workers: {max_workers}")
-    print(f"  - Generate Summary: {'Yes' if generate_summary_flag else 'No'}")
+    # Print backup configuration
     print(f"  - LMDB Backup: {'Enabled' if enable_backup else 'Disabled'}")
     if enable_backup:
         print(f"  - Backup Directory: {BACKUP_BASE_DIR}")
         print(f"  - Stop on Backup Failure: {'Yes' if not backup_continue_on_failure else 'No'}")
 
-    # Get bookmark data
-    bookmarks = get_bookmarks(browser=args.browser, profile_path=args.profile_path)
+    # Standard run or Watch mode loop
+    if args.watch:
+        logger.info(f"Watch mode enabled. Running every {args.watch} seconds.")
+        print(f"Watch mode enabled. The crawler will run every {args.watch} seconds.")
+        print("Press Ctrl+C to stop.")
 
-    # Filter bookmarks: remove empty URLs, 10.0. network URLs, and non-qualifying types
-    filtered_bookmarks = []
-    for bookmark in bookmarks:
-        url = bookmark["url"]
-        # Check for empty URL, URL type, not "Extension" name, and not 10.0. network URL
-        if (url and
-            bookmark["type"] == "url" and
-            bookmark["name"] != "扩展程序" and # "扩展程序" is a folder name for extensions in Chinese Chrome
-            not re.match(r"https?://10\.0\.", url)):
-            # If not rebuilding, skip URLs already in LMDB bookmarks
-            if not args.rebuild:
-                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()
+        while not shutdown_flag:
+            try:
+                # Run the crawl cycle
+                process_crawl_cycle(
+                    args, config_data, bookmark_limit, max_workers,
+                    generate_summary_flag, flush_interval, min_delay, max_delay
+                )
+
+                # After the first run, we must disable rebuild to avoid clearing the DB again
+                # and to enable the optimization that checks for existing bookmarks
+                if args.rebuild:
+                    print("Initial rebuild complete. Switching to incremental mode for subsequent runs.")
+                    args.rebuild = False
+
+                # Wait for the next interval
+                print(f"Waiting {args.watch} seconds for next cycle...")
+                # Sleep in small increments to check for shutdown flag
+                for _ in range(args.watch):
+                    if shutdown_flag:
+                        break
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                # This should be caught by signal handler, but just in case
+                break
+            except Exception as e:
+                logger.error(f"Error in watch loop: {e}")
+                print(f"Error in watch loop: {e}")
+                print(f"Retrying in {args.watch} seconds...")
+                time.sleep(args.watch)
+    else:
+        # One-shot execution
+        process_crawl_cycle(
+            args, config_data, bookmark_limit, max_workers,
+            generate_summary_flag, flush_interval, min_delay, max_delay
+        )
+
+        # Final statistics and reporting (only for one-shot mode as watch mode logs per cycle)
+        # All bookmarks are already stored in LMDB via periodic flushes
+        try:
+            bookmarks_with_content = safe_lmdb_operation(
+                lambda txn: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in txn.cursor(bookmarks_db)],
+                lambda: fallback_bookmarks.copy(),
+                "retrieving final bookmarks list"
+            )
+            if bookmarks_with_content is None:
+                bookmarks_with_content = []
+            print(f"LMDB contains {len(bookmarks_with_content)} total bookmarks")
+
+            # Display content length statistics from LMDB
+            if bookmarks_with_content:
                 try:
-                    with lmdb_env.begin() as txn:
-                        if txn.get(url_hash.encode('utf-8'), db=url_hashes_db):
-                            try:
-                                print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title')} - {url}")
-                            except UnicodeEncodeError:
-                                print(f"Skipping already indexed URL: {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
-                            continue
+                    total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)
+                    avg_length = total_length / len(bookmarks_with_content)
+                    print(f"Average crawled content length: {avg_length:.2f} characters")
+                    print(f"Longest content: {max(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
+                    print(f"Shortest content: {min(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
+
+                    # Statistics on crawl methods used
+                    selenium_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "selenium")
+                    requests_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "requests")
+                    print(f"Crawled using Selenium: {selenium_count} items")
+                    print(f"Crawled using Requests: {requests_count} items")
                 except Exception as e:
-                    logger.error(f"Error checking URL deduplication: {e}")
-                    if use_fallback and url_hash in fallback_url_hashes:
-                        try:
-                            print(f"Skipping already indexed URL (fallback): {bookmark.get('name', 'No Title')} - {url}")
-                        except UnicodeEncodeError:
-                            print(f"Skipping already indexed URL (fallback): {bookmark.get('name', 'No Title').encode('ascii', 'replace').decode('ascii')} - {url}")
-                        continue
-            filtered_bookmarks.append(bookmark)
-    
-    # Save filtered bookmark data
-    with open(bookmarks_path, "w", encoding="utf-8") as output_file:
-        json.dump(filtered_bookmarks, output_file, ensure_ascii=False, indent=4)
-    
-    # Parallel crawl bookmark content
-    bookmarks_with_content, failed_records, skipped_url_count = parallel_fetch_bookmarks(
-        filtered_bookmarks,
-        max_workers=max_workers,
-        limit=bookmark_limit if bookmark_limit > 0 else None,
-        flush_interval=flush_interval,
-        skip_unreachable=args.skip_unreachable,
-        min_delay=min_delay,
-        max_delay=max_delay
-    )
-    
-    # Only execute the following code if summary generation is enabled
-    if generate_summary_flag and bookmarks_with_content:
-        # Configure model
-        model_config = ModelConfig(config_data)
-
-        # Test API connection
-        if not test_api_connection(model_config):
-            print("LLM API connection failed, please check configuration and try again.", model_config.api_base, model_config.model_name, model_config.api_key, model_config.model_type)
-            print("Skipping summary generation step...")
-        else:
-            # Generate summaries for the crawled content, respecting the force recompute flag
-            bookmarks_with_content = generate_summaries_for_bookmarks(bookmarks_with_content, model_config, args.force_recompute_summaries)
-    elif not generate_summary_flag:
-        print("Skipping summary generation step based on configuration...")
-
-    # All bookmarks are already stored in LMDB via periodic flushes
-    # Just ensure final consistency and provide summary
-    try:
-        bookmarks_with_content = safe_lmdb_operation(
-            lambda txn: [pickle.loads(bookmark_bytes) for key_bytes, bookmark_bytes in txn.cursor(bookmarks_db)],
-            lambda: fallback_bookmarks.copy(),
-            "retrieving final bookmarks list"
-        )
-        if bookmarks_with_content is None:
-            bookmarks_with_content = []
-        print(f"LMDB contains {len(bookmarks_with_content)} total bookmarks")
-    except Exception as e:
-        logger.error(f"Error during final summary: {e}")
-        bookmarks_with_content = fallback_bookmarks.copy() if use_fallback else []
-        print(f"Fallback contains {len(bookmarks_with_content)} total bookmarks")
-
-    # Save failed URLs and reasons (keeping JSON format for compatibility)
-    try:
-        failed_records_list = safe_lmdb_operation(
-            lambda txn: [pickle.loads(record_bytes) for key_bytes, record_bytes in txn.cursor(failed_records_db)],
-            lambda: fallback_failed_records.copy(),
-            "retrieving failed records list"
-        )
-        if failed_records_list is None:
-            failed_records_list = []
-        with open(failed_urls_path, "w", encoding="utf-8") as f:
-            json.dump(failed_records_list, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logger.error(f"Error saving failed URLs: {e}")
-        # Try to save fallback data
-        try:
-            with open(failed_urls_path, "w", encoding="utf-8") as f:
-                json.dump(fallback_failed_records, f, ensure_ascii=False, indent=4)
-        except Exception as fallback_e:
-            logger.error(f"Error saving fallback failed URLs: {fallback_e}")
-    
-    print(f"Extracted {len(filtered_bookmarks)} valid bookmarks, saved to {bookmarks_path}")
-    print(f"Successfully crawled content for {len(bookmarks_with_content)} bookmarks, saved to {lmdb_storage_path}")
-    print(f"Skipped {skipped_url_count} duplicate URLs during crawling")
-    print(f"Failed to crawl {len(failed_records)} URLs, details saved to {failed_urls_path}")
-    
-    # Print list of failed URLs and titles for easy viewing
-    if failed_records:
-        print("\nFailed URLs and Titles:")
-        for idx, record in enumerate(failed_records):
-            print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
-    elif use_fallback and fallback_failed_records:
-        print("\nFailed URLs and Titles (from fallback):")
-        for idx, record in enumerate(fallback_failed_records):
-            print(f"{idx+1}. {record.get('title', 'No Title')} - {record['url']} - Reason: {record['reason']}")
-    
-    # Display content length statistics from LMDB
-    if bookmarks_with_content:
-        try:
-            total_length = sum(b.get("content_length", 0) for b in bookmarks_with_content)
-            avg_length = total_length / len(bookmarks_with_content)
-            print(f"Average crawled content length: {avg_length:.2f} characters")
-            print(f"Longest content: {max(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
-            print(f"Shortest content: {min(b.get('content_length', 0) for b in bookmarks_with_content)} characters")
-
-            # Statistics on crawl methods used
-            selenium_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "selenium")
-            requests_count = sum(1 for b in bookmarks_with_content if b.get("crawl_method") == "requests")
-            print(f"Crawled using Selenium: {selenium_count} items")
-            print(f"Crawled using Requests: {requests_count} items")
+                    logger.error(f"Error calculating statistics: {e}")
         except Exception as e:
-            logger.error(f"Error calculating statistics: {e}")
-    elif use_fallback:
-        print("Using fallback mode - statistics not available")
+            logger.error(f"Error during final summary: {e}")
 
     # Cleanup LMDB resources
     cleanup_lmdb()

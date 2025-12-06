@@ -68,7 +68,7 @@ def test_crawl_workflow(tmp_path, test_bookmarks_file):
 
         try:
             # Run crawling
-            bookmarks_with_content, failed_records, new_bookmarks_added = crawl.parallel_fetch_bookmarks(
+            bookmarks_with_content, failed_records, new_bookmarks_added, _skipped = crawl.parallel_fetch_bookmarks(
                 bookmarks_data,
                 max_workers=2,
                 limit=5,
@@ -101,7 +101,7 @@ def test_crawl_deduplication(tmp_path):
 
         crawl.init_lmdb(map_size=10485760)
         try:
-            results, _failed, _added = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
+            results, _failed, _added, _skipped = crawl.parallel_fetch_bookmarks(bookmarks, max_workers=1)
 
             # Should process first, skip second
             assert len(results) == 1
